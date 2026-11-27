@@ -23,7 +23,7 @@ final class TvBrowser extends FrameLayout {
     interface Actions {
         void navigate(String url, String label); void open(JSONObject movie); void play();
         void search(String query); void account(); void checkForUpdates(); void retry(); void exitToFireTv();
-        boolean loadMore();
+        boolean loadMore(boolean retry);
         void episode(int season, int episode);
         void filter(String parameter, String value);
     }
@@ -165,7 +165,7 @@ final class TvBrowser extends FrameLayout {
         content.addView(grid, new FrameLayout.LayoutParams(-1, -1));
         retryPage = button("Retry loading more titles");
         retryPage.setVisibility(GONE);
-        retryPage.setOnClickListener(view -> startMore());
+        retryPage.setOnClickListener(view -> startMore(true));
         retryPage.setOnKeyListener((view, key, event) -> {
             if (key != KeyEvent.KEYCODE_DPAD_UP || event.getAction() != KeyEvent.ACTION_DOWN) return false;
             return grid.focusSelected();
@@ -291,11 +291,11 @@ final class TvBrowser extends FrameLayout {
         retryPage.setVisibility(moreFailed && grid.getVisibility() == VISIBLE && !loading ? VISIBLE : GONE);
     }
     private void requestMore() {
-        if (!moreFailed) startMore();
+        if (!moreFailed) startMore(false);
     }
-    private void startMore() {
+    private void startMore(boolean retry) {
         if (!grid.isShown() || !moreAvailable || moreLoading || loading || searchBar.getVisibility() == VISIBLE) return;
-        if (!actions.loadMore()) return;
+        if (!actions.loadMore(retry)) return;
         if (retryPage.hasFocus()) grid.focusSelected();
         moreFailed = false;
         moreLoading = true;

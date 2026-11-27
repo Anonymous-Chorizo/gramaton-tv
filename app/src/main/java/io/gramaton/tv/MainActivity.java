@@ -61,7 +61,7 @@ public final class MainActivity extends Activity {
     private int selectedSeason, selectedEpisode;
     private boolean documentReady;
     private JSONObject gridSourcePage;
-    private boolean gridDocumentReady, loadingGridPage;
+    private boolean gridDocumentReady, loadingGridPage, awaitingGridRetry;
     private String gridStartUrl;
     private String applyingGridFilter, applyingGridFilterValue;
     private final java.util.LinkedHashMap<String, String> queuedGridFilters = new java.util.LinkedHashMap<>();
@@ -119,7 +119,9 @@ public final class MainActivity extends Activity {
                 if (pendingSearch == null && url.equals(view.getUrl())) { documentReady = true; pageFinished(url); }
             }
             @Override public void onReceivedError(WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceError error) {
-                if (request.isForMainFrame() && tv != null) tv.status("Could not connect. Select Home to retry, or Account to sign in.");
+                if (request.isForMainFrame() && tv != null && !loadingGridPage && !awaitingGridRetry) {
+                    tv.status("Could not connect. Select Home to retry, or Account to sign in.");
+                }
             }
         });
         browser.addView(web, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -133,7 +135,7 @@ public final class MainActivity extends Activity {
             @Override public void open(JSONObject movie) { openMovie(movie); }
             @Override public void play() { subtitleEpoch++; resolveMovie(); }
             @Override public void search(String query) { searchCatalogue(query); }
-            @Override public boolean loadMore() { return loadNextGridPage(); }
+            @Override public boolean loadMore(boolean retry) { return loadNextGridPage(retry); }
             @Override public void filter(String parameter, String value) { filterCatalogue(parameter, value); }
             @Override public void account() { showAccount(); }
             @Override public void checkForUpdates() { appUpdates.check(); }
@@ -243,7 +245,7 @@ public final class MainActivity extends Activity {
     private void pageFinished(String url) {
         if (url.contains("/session/")) { suspendGridPaging(); catalogueCache.clear(); setNativeVisible(false); web.requestFocus(); return; }
         if (accountVisible) return;
-        if (loadingGridPage) return;
+        if (loadingGridPage || awaitingGridRetry) return;
         if (pendingSearch != null) { String query = pendingSearch; pendingSearch = null; searchCatalogue(query); return; }
         if (isMovie(Uri.parse(url))) {
             if (currentMovie != null) pollDetails(++pageEpoch, 0);
@@ -356,6 +358,7 @@ public final class MainActivity extends Activity {
     private void suspendGridPaging() {
         gridDocumentReady = false;
         loadingGridPage = false;
+        awaitingGridRetry = false;
         applyingGridFilter = null;
         queuedGridFilters.clear();
         tv.suspendGridPaging();
@@ -369,14 +372,29 @@ public final class MainActivity extends Activity {
         tv.gridDocumentReady();
     }
 
-    private boolean loadNextGridPage() {
-        if (!gridDocumentReady || loadingGridPage || !documentReady || gridSourcePage == null ||
-                !gridSourcePage.optBoolean("next") || currentMovie != null || accountVisible) return false;
+    private boolean loadNextGridPage(boolean retry) {
+        if (loadingGridPage || gridSourcePage == null || !gridSourcePage.optBoolean("next") ||
+                currentMovie != null || accountVisible) return false;
+        if (!retry && (!gridDocumentReady || !documentReady)) return false;
         JSONObject previous = gridSourcePage;
         int expected = previous.optInt("nextPage");
         int epoch = ++pageEpoch;
         loadingGridPage = true;
+        awaitingGridRetry = false;
         preserveCatalogueViews = true;
+        if (retry) {
+            // A failed Next link may have left the WebView on a different page.
+            // Reload the last displayed catalogue page before retrying, without replacing the native grid.
+            documentReady = false;
+            gridDocumentReady = false;
+            web.stopLoading();
+            web.loadUrl(catalogueUrl);
+            pollNextGridPage(epoch, previous, expected, 0, true);
+        } else requestNextGridPage(epoch, previous, expected);
+        return true;
+    }
+
+    private void requestNextGridPage(int epoch, JSONObject previous, int expected) {
         String next = String.format(java.util.Locale.ROOT, """
             (() => {
                 const expected = %d;
@@ -398,13 +416,12 @@ public final class MainActivity extends Activity {
             """, expected);
         web.evaluateJavascript(next, result -> {
             if (epoch != pageEpoch) return;
-            if ("true".equals(result)) pollNextGridPage(epoch, previous, expected, 0);
+            if ("true".equals(result)) pollNextGridPage(epoch, previous, expected, 0, false);
             else finishGridPage(false);
         });
-        return true;
     }
 
-    private void pollNextGridPage(int epoch, JSONObject previous, int expected, int attempt) {
+    private void pollNextGridPage(int epoch, JSONObject previous, int expected, int attempt, boolean restoringSource) {
         handler.postDelayed(() -> {
             if (isDestroyed() || epoch != pageEpoch || !loadingGridPage) return;
             web.evaluateJavascript(catalogueScript, encoded -> {
@@ -416,11 +433,17 @@ public final class MainActivity extends Activity {
                     }
                     int page = data.optInt("page");
                     JSONArray cards = data.getJSONArray("cards");
+                    boolean ready = data.optBoolean("ready") && !data.optBoolean("home");
+                    if (restoringSource && documentReady && catalogueUrl.equals(web.getUrl()) && ready && data.optBoolean("next") &&
+                            page == previous.optInt("page") && (expected == 0 || expected == data.optInt("nextPage"))) {
+                        requestNextGridPage(epoch, previous, expected);
+                        return;
+                    }
                     boolean changedPage = expected > 0 && page == expected;
                     if (!changedPage && (expected == 0 || page == 0)) {
                         changedPage = !sameGridTitles(previous.getJSONArray("cards"), cards);
                     }
-                    if (data.optBoolean("ready") && changedPage) {
+                    if (!restoringSource && ready && changedPage && (cards.length() > 0 || data.optBoolean("empty"))) {
                         gridSourcePage = data;
                         String actual = web.getUrl();
                         if (actual != null && isSite(Uri.parse(actual))) {
@@ -433,7 +456,7 @@ public final class MainActivity extends Activity {
                         return;
                     }
                 } catch (Exception ignored) { /* The catalogue may still be replacing its results. */ }
-                if (attempt < 24) pollNextGridPage(epoch, previous, expected, attempt + 1);
+                if (attempt < 24) pollNextGridPage(epoch, previous, expected, attempt + 1, restoringSource);
                 else finishGridPage(false);
             });
         }, attempt == 0 ? 200 : 400);
@@ -449,8 +472,9 @@ public final class MainActivity extends Activity {
 
     private void finishGridPage(boolean success) {
         loadingGridPage = false;
-        if (!success) tv.failGridPage();
-        applyQueuedGridFilter();
+        awaitingGridRetry = !success;
+        if (success) applyQueuedGridFilter();
+        else tv.failGridPage();
     }
 
     private void applyQueuedGridFilter() {
@@ -472,7 +496,7 @@ public final class MainActivity extends Activity {
     }
 
     private void filterCatalogue(String parameter, String value) {
-        if (loadingGridPage || applyingGridFilter != null) {
+        if (loadingGridPage || applyingGridFilter != null || (awaitingGridRetry && !catalogueUrl.equals(web.getUrl()))) {
             queuedGridFilters.put(parameter, value);
             return;
         }
@@ -482,6 +506,7 @@ public final class MainActivity extends Activity {
         }
         preserveCatalogueViews = false;
         gridDocumentReady = false;
+        awaitingGridRetry = false;
         applyingGridFilter = parameter;
         applyingGridFilterValue = value;
         tv.suspendGridPaging();
