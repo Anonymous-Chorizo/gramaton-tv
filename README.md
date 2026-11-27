@@ -1,12 +1,14 @@
 # Gramaton TV
 
-The latest build is v0.14 (player redesign), a compiled, debug-signed Fire TV / Android TV app. The v0.4 redesign passes compilation and lint and is installed on the Ember Artline. Device checks verified the new homepage, movie details, preserved selection on Back, and service-backed search for `star`. Earlier playback limitations still apply. See [the native TV review](NATIVE_TV_REVIEW.md) for findings, current changes and the remaining device checks. Compilation, Android lint, and APK signature checks pass; native poster browsing and search have been tested on the user's Ember Artline. Native playback still needs a complete picture/sound/resume acceptance test. The website supplies authentication and catalogue data behind a native TV interface. No official Gramaton API or supported native integration has been established. The link reader is a provisional website adapter and may break when the site changes.
+Gramaton TV is a native Fire TV and Android TV client for Gramaton. This source checkout is version 0.49. The app uses Gramaton's website for account sign-in and catalogue data and uses Media3 for native video playback.
+
+The sections below include historical development and device-test notes.
 
 ## Run
 
-For users: use the supplied `Gramaton-TV.apk` and follow the installation help in chat. You do not need Android Studio.
+The debug-signed Fire TV APK is available as `Gramaton-Fire-TV-v0.49.apk` in this repository.
 
-For developers rebuilding: use JDK 17, Android compile SDK 36, build tools 35.0.0, and the included Gradle 8.11.1 wrapper. Build with `./gradlew :app:assembleDebug :app:lintDebug`, or open this directory in Android Studio. Compile SDK 36 does not require Android 16 on the TV; minimum Android API is 26. Amazon lists the Ember Artline (2026) as Fire OS 8 / Android API 30.
+For developers rebuilding: use JDK 17, Android compile SDK 36, build tools 35.0.0, and the included Gradle 8.11.1 wrapper. Build with `./gradlew :app:assembleDebug :app:lintDebug`, or open this directory in Android Studio. Add `-PfireTv` to use the wide Fire TV launcher artwork. Compile SDK 36 does not require Android 16 on the TV; minimum Android API is 26. Amazon lists the Ember Artline (2026) as Fire OS 8 / Android API 30.
 
 Sign in directly inside the app (the desktop browser session is separate). The native library opens automatically. Use Left/Right to select posters, Up/Down to change rows, and Select to open movie details. Choose **Play fullscreen** or **Resume fullscreen**. Use the Search tab and the Fire TV keyboard to search Gramaton's movie catalogue. Home, Movies, Watchlist, Favorites and page controls are native. Account opens the website when sign-in or account access is needed. Back returns to the page and saves position. Backgrounding the app releases playback and saves position; select Play on return. Resume positions are local to this app installation, keyed by movie path. Different Gramaton accounts on the same installation currently share resume positions.
 
