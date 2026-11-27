@@ -54,12 +54,17 @@ public final class MainActivity extends Activity {
     private AppUpdates appUpdates;
     private String catalogueUrl = "https://gramaton.io/", catalogueLabel = "Home";
     private JSONObject currentMovie;
-    private boolean preserveReturningCatalogue;
+    private boolean preserveCatalogueViews;
     private int pageEpoch;
     private boolean accountVisible;
     private String catalogueScript, detailsScript;
     private int selectedSeason, selectedEpisode;
     private boolean documentReady;
+    private JSONObject gridSourcePage;
+    private boolean gridDocumentReady, loadingGridPage, awaitingGridRetry;
+    private String gridStartUrl;
+    private String applyingGridFilter, applyingGridFilterValue;
+    private final java.util.LinkedHashMap<String, String> queuedGridFilters = new java.util.LinkedHashMap<>();
     private String pendingSearch, requestedCatalogueUrl = "https://gramaton.io/", lastCatalogueFingerprint = "";
     private int stableCatalogueReads;
     private static final class CatalogueCache {
@@ -96,7 +101,7 @@ public final class MainActivity extends Activity {
         web.getSettings().setAllowContentAccess(false);
         CookieManager.getInstance().setAcceptCookie(true);
         web.setWebViewClient(new WebViewClient() {
-            @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) { documentReady = false; }
+            @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) { documentReady = false; gridDocumentReady = false; }
             @Override public boolean shouldOverrideUrlLoading(WebView view, android.webkit.WebResourceRequest request) {
                 Uri uri = request.getUrl();
                 return !isSite(uri);
@@ -111,10 +116,12 @@ public final class MainActivity extends Activity {
             @Override public void onPageCommitVisible(WebView view, String url) {
                 // Read catalogue text as soon as the document is visible, without
                 // waiting for every website poster and third-party asset to load.
-                if (url.equals(view.getUrl())) { documentReady = true; pageFinished(url); }
+                if (pendingSearch == null && url.equals(view.getUrl())) { documentReady = true; pageFinished(url); }
             }
             @Override public void onReceivedError(WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceError error) {
-                if (request.isForMainFrame() && tv != null) tv.status("Could not connect. Select Home to retry, or Account to sign in.");
+                if (request.isForMainFrame() && tv != null && !loadingGridPage && !awaitingGridRetry) {
+                    tv.status("Could not connect. Select Home to retry, or Account to sign in.");
+                }
             }
         });
         browser.addView(web, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -128,7 +135,8 @@ public final class MainActivity extends Activity {
             @Override public void open(JSONObject movie) { openMovie(movie); }
             @Override public void play() { subtitleEpoch++; resolveMovie(); }
             @Override public void search(String query) { searchCatalogue(query); }
-            @Override public void page(String direction) { turnPage(direction); }
+            @Override public boolean loadMore(boolean retry) { return loadNextGridPage(retry); }
+            @Override public void filter(String parameter, String value) { filterCatalogue(parameter, value); }
             @Override public void account() { showAccount(); }
             @Override public void checkForUpdates() { appUpdates.check(); }
             @Override public void exitToFireTv() {
@@ -139,6 +147,7 @@ public final class MainActivity extends Activity {
             }
             @Override public void retry() {
                 if (currentMovie != null) openMovie(currentMovie);
+                else if (catalogueLabel.startsWith("Search: ")) searchCatalogue(catalogueLabel.substring("Search: ".length()));
                 else { catalogueCache.clear(); navigateCatalogue(catalogueUrl, catalogueLabel); }
             }
             @Override public void episode(int season, int episode) {
@@ -173,6 +182,7 @@ public final class MainActivity extends Activity {
         web.setFocusable(!visible); web.setFocusableInTouchMode(!visible);
     }
     private void showAccount() {
+        suspendGridPaging();
         accountVisible = true; pageEpoch++; currentMovie = null; catalogueCache.clear();
         setNativeVisible(false); web.requestFocus();
         status.setText("Account / sign-in. Select Open movies above when finished.");
@@ -180,8 +190,12 @@ public final class MainActivity extends Activity {
     }
     private void navigateCatalogue(String url, String label) {
         if (!isSite(Uri.parse(url))) return;
+        suspendGridPaging();
+        gridSourcePage = null;
+        gridStartUrl = null;
+        if (TvBrowser.isGridListing(label)) tv.resetSignature();
         accountVisible = false; currentMovie = null; pendingSearch = null; pageEpoch++;
-        preserveReturningCatalogue = false; tv.rememberPage(); tv.hideDetails(); tv.closeSearch(); tv.setPageKey(catalogueStateKey(url));
+        preserveCatalogueViews = false; tv.rememberPage(); tv.hideDetails(); tv.closeSearch(); tv.setPageKey(catalogueStateKey(url));
         catalogueLabel = label; catalogueUrl = url; requestedCatalogueUrl = url;
         setNativeVisible(true);
         CatalogueCache cached = catalogueCache.get(url);
@@ -190,7 +204,11 @@ public final class MainActivity extends Activity {
         }
         if (cached == null) tv.loading(label);
         else {
-            if (android.os.SystemClock.elapsedRealtime() - cached.loadedAt < 60000 && url.equals(web.getUrl()) && documentReady) { tv.finishLoading(); return; }
+            if (android.os.SystemClock.elapsedRealtime() - cached.loadedAt < 60000 && url.equals(web.getUrl()) && documentReady) {
+                tv.finishLoading();
+                setGridDocumentReady(cached.data);
+                return;
+            }
             tv.refreshing(label);
         }
         web.loadUrl(url);
@@ -198,23 +216,36 @@ public final class MainActivity extends Activity {
     private void openMovie(JSONObject movie) {
         String url = movie.optString("url");
         if (!isMovie(Uri.parse(url))) return;
+        suspendGridPaging();
         subtitleEpoch++; currentMovie = movie; selectedSeason = 0; selectedEpisode = 0; accountVisible = false; pageEpoch++;
         tv.showDetails(movie); web.loadUrl(url);
     }
     private void returnToCatalogue() {
-        subtitleEpoch++; currentMovie = null; accountVisible = false; pendingSearch = null; pageEpoch++;
-        preserveReturningCatalogue = true; tv.hideDetails(); setNativeVisible(true);
-        CatalogueCache previous = catalogueCache.get(catalogueUrl);
-        if (previous == null) tv.loading(catalogueLabel);
-        else if (catalogueLabel.equals("Home") || catalogueLabel.equals("Watchlist")) {
-            try { tv.render(previous.data, catalogueLabel); } catch (Exception error) { preserveReturningCatalogue = false; }
+        boolean returningFromAccount = accountVisible;
+        if (returningFromAccount && TvBrowser.isGridListing(catalogueLabel)) {
+            tv.focusCatalogueWhenReady();
+            if (catalogueLabel.startsWith("Search: ")) searchCatalogue(catalogueLabel.substring("Search: ".length()));
+            else navigateCatalogue(gridStartUrl == null ? catalogueUrl : gridStartUrl, catalogueLabel);
+            return;
         }
-        // Existing native rows stay visible and retain focus while website context refreshes.
+        suspendGridPaging();
+        subtitleEpoch++; currentMovie = null; accountVisible = false; pendingSearch = null; pageEpoch++;
+        preserveCatalogueViews = !returningFromAccount && tv.hasRenderedCatalogue(catalogueLabel);
+        if (returningFromAccount) { tv.resetSignature(); tv.focusCatalogueWhenReady(); }
+        tv.hideDetails(); setNativeVisible(true);
+        CatalogueCache previous = catalogueCache.get(catalogueUrl);
+        if (previous != null && (catalogueLabel.equals("Home") || catalogueLabel.equals("Watchlist"))) {
+            try { tv.render(previous.data, catalogueLabel); preserveCatalogueViews = true; }
+            catch (Exception error) { preserveCatalogueViews = false; }
+        }
+        if (!preserveCatalogueViews) tv.loading(catalogueLabel);
+        // Keep the displayed catalogue and focus while the WebView reloads its current page.
         web.loadUrl(catalogueUrl);
     }
     private void pageFinished(String url) {
-        if (url.contains("/session/")) { catalogueCache.clear(); setNativeVisible(false); web.requestFocus(); return; }
+        if (url.contains("/session/")) { suspendGridPaging(); catalogueCache.clear(); setNativeVisible(false); web.requestFocus(); return; }
         if (accountVisible) return;
+        if (loadingGridPage || awaitingGridRetry) return;
         if (pendingSearch != null) { String query = pendingSearch; pendingSearch = null; searchCatalogue(query); return; }
         if (isMovie(Uri.parse(url))) {
             if (currentMovie != null) pollDetails(++pageEpoch, 0);
@@ -231,20 +262,38 @@ public final class MainActivity extends Activity {
                 boolean settled = false;
                 try {
                     JSONObject data = new JSONObject((String)new org.json.JSONTokener(encoded).nextValue());
-                    if (data.optBoolean("login")) { catalogueCache.clear(); setNativeVisible(false); web.requestFocus(); return; }
+                    if (data.optBoolean("login")) { suspendGridPaging(); catalogueCache.clear(); setNativeVisible(false); web.requestFocus(); return; }
                     setNativeVisible(true);
+                    boolean searchMatches = !catalogueLabel.startsWith("Search: ") || catalogueLabel.substring("Search: ".length()).equalsIgnoreCase(data.optString("query"));
+                    if (!searchMatches) {
+                        if (attempt < 13) pollCatalogue(epoch, attempt + 1);
+                        else tv.status("Search did not return a results page. Try again.");
+                        return;
+                    }
+                    boolean filtering = applyingGridFilter != null;
+                    if (filtering && !gridFilterMatches(data)) {
+                        if (attempt < 13) pollCatalogue(epoch, attempt + 1);
+                        else failGridFilter("The listing didn’t apply the selected filter. Try again.");
+                        return;
+                    }
+                    if (attempt >= 13 && !data.optBoolean("ready", true) && TvBrowser.isGridListing(catalogueLabel)) {
+                        tv.status("The listing is taking longer than expected.");
+                        return;
+                    }
                     if ((data.getJSONArray("cards").length() > 0 && data.optBoolean("ready", true)) || data.optBoolean("empty") || attempt >= 13) {
-                        String fingerprint = data.getJSONArray("cards").toString();
+                        String fingerprint = data.toString();
                         stableCatalogueReads = fingerprint.equals(lastCatalogueFingerprint) ? stableCatalogueReads + 1 : 0;
                         lastCatalogueFingerprint = fingerprint; settled = stableCatalogueReads >= 2;
                         String actual = web.getUrl();
                         if (actual != null && isSite(Uri.parse(actual)) && !isMovie(Uri.parse(actual))) catalogueUrl = actual;
-                        tv.setPageKey(catalogueStateKey(catalogueUrl));
+                        if (!preserveCatalogueViews) tv.setPageKey(catalogueStateKey(catalogueUrl));
                         CatalogueCache entry = new CatalogueCache(data); catalogueCache.put(catalogueUrl, entry);
                         if (!requestedCatalogueUrl.isEmpty()) catalogueCache.put(requestedCatalogueUrl, entry);
-                        if (!preserveReturningCatalogue) tv.render(data, catalogueLabel);
+                        if (!preserveCatalogueViews) tv.render(data, catalogueLabel);
+                        setGridDocumentReady(data);
+                        if (filtering) { applyingGridFilter = null; applyQueuedGridFilter(); return; }
                     }
-                } catch (Exception error) { tv.status("Could not read this page. Choose a section above to retry."); }
+                } catch (Exception error) { tv.status("Could not read this page. Choose a section from the menu to retry."); }
                 if (!settled && attempt < 13) pollCatalogue(epoch, attempt + 1);
             });
         }, attempt == 0 ? 500 : 750);
@@ -271,28 +320,230 @@ public final class MainActivity extends Activity {
         }, attempt == 0 ? 400 : 750);
     }
     private void searchCatalogue(String query) {
-        preserveReturningCatalogue = false;
+        preserveCatalogueViews = false;
+        suspendGridPaging();
+        gridSourcePage = null;
+        gridStartUrl = null;
         pageEpoch++; accountVisible = false; currentMovie = null; tv.rememberPage(); tv.hideDetails(); requestedCatalogueUrl = "";
         catalogueLabel = "Search: " + query; tv.setPageKey("search:" + query); tv.resetSignature(); tv.loading(catalogueLabel);
-        if (web.getUrl() != null && isMovie(Uri.parse(web.getUrl()))) { pendingSearch = query; web.loadUrl("https://gramaton.io/"); return; }
+        if (web.getUrl() != null && !"/".equals(Uri.parse(web.getUrl()).getPath())) { pendingSearch = query; web.loadUrl("https://gramaton.io/"); return; }
         if (!documentReady) { pendingSearch = query; return; }
-        String js = "(()=>{const e=document.getElementById('search-input-regular')||document.getElementById('search-input-mobile');if(!e)return false;e.value=" + JSONObject.quote(query) + ";e.dispatchEvent(new Event('input',{bubbles:true}));const a=e.parentElement.querySelector('a[onclick]');if(a){a.click();return true;}if(typeof search_button_event==='function'){search_button_event(e.id);return true;}return false;})()";
-        web.evaluateJavascript(js, result -> {
-            if (!"true".equals(result)) tv.status("Search is not ready. Select Home, then try Search again.");
+        lastCatalogueFingerprint = "";
+        stableCatalogueReads = 0;
+        submitWebSearch(query, pageEpoch, 0);
+    }
+
+    private void submitWebSearch(String query, int epoch, int attempt) {
+        if (isDestroyed() || epoch != pageEpoch) return;
+        String submit = String.format(java.util.Locale.ROOT, """
+            (() => {
+                const desktop = document.getElementById('sidenav-default');
+                const mobile = desktop && getComputedStyle(desktop).display === 'none';
+                const field = document.getElementById(mobile ? 'search-input-mobile' : 'search-input-regular');
+                if (!field || typeof search_button_event !== 'function') return false;
+                field.value = %s;
+                field.dispatchEvent(new Event('input', {bubbles:true}));
+                search_button_event(field.id);
+                return true;
+            })()
+            """, JSONObject.quote(query));
+        web.evaluateJavascript(submit, result -> {
+            if (epoch != pageEpoch) return;
+            if ("true".equals(result)) pollCatalogue(epoch, 0);
+            else if (attempt < 5) handler.postDelayed(() -> submitWebSearch(query, epoch, attempt + 1), 300);
+            else tv.status("Search is not ready. Select Home, then try Search again.");
         });
     }
-    private void turnPage(String direction) {
-        preserveReturningCatalogue = false;
-        tv.rememberPage(); requestedCatalogueUrl = ""; int epoch = ++pageEpoch; tv.loading(catalogueLabel);
-        String js = "(()=>{const a=Array.from(document.querySelectorAll('a')).find(a=>a.textContent.trim().toLowerCase()===" + JSONObject.quote(direction) + ");if(!a)return false;a.click();return true;})()";
-        web.evaluateJavascript(js, result -> { if ("true".equals(result)) pollCatalogue(epoch, 0); else tv.status("No more pages in this direction."); });
+
+    private void suspendGridPaging() {
+        gridDocumentReady = false;
+        loadingGridPage = false;
+        awaitingGridRetry = false;
+        applyingGridFilter = null;
+        queuedGridFilters.clear();
+        tv.suspendGridPaging();
+    }
+
+    private void setGridDocumentReady(JSONObject data) {
+        if (!TvBrowser.isGridListing(catalogueLabel) || !data.optBoolean("ready")) return;
+        if (!preserveCatalogueViews) gridStartUrl = catalogueUrl;
+        gridSourcePage = data;
+        gridDocumentReady = true;
+        tv.gridDocumentReady();
+    }
+
+    private boolean loadNextGridPage(boolean retry) {
+        if (loadingGridPage || gridSourcePage == null || !gridSourcePage.optBoolean("next") ||
+                currentMovie != null || accountVisible) return false;
+        if (!retry && (!gridDocumentReady || !documentReady)) return false;
+        JSONObject previous = gridSourcePage;
+        int expected = previous.optInt("nextPage");
+        int epoch = ++pageEpoch;
+        loadingGridPage = true;
+        awaitingGridRetry = false;
+        preserveCatalogueViews = true;
+        if (retry) {
+            // A failed Next link may have left the WebView on a different page.
+            // Reload the last displayed catalogue page before retrying, without replacing the native grid.
+            documentReady = false;
+            gridDocumentReady = false;
+            web.stopLoading();
+            web.loadUrl(catalogueUrl);
+            pollNextGridPage(epoch, previous, expected, 0, true);
+        } else requestNextGridPage(epoch, previous, expected);
+        return true;
+    }
+
+    private void requestNextGridPage(int epoch, JSONObject previous, int expected) {
+        String next = String.format(java.util.Locale.ROOT, """
+            (() => {
+                const expected = %d;
+                const current = Number(new URLSearchParams(location.search).get('page'));
+                if (expected && current === expected) return true;
+                const link = Array.from(document.querySelectorAll('.pagination a')).find(a =>
+                    (a.dataset.type === 'next' || a.textContent.trim().toLowerCase() === 'next') &&
+                    !a.closest('.disabled') && a.getAttribute('aria-disabled') !== 'true');
+                if (!link) return true;
+                const target = Number((link.getAttribute('onclick') || '').split('(')[1]?.split(')')[0]);
+                if (expected && target > expected) return true;
+                if (expected && target && target !== expected) return false;
+                if (link.getAttribute('href') === '#') {
+                    link.addEventListener('click', event => event.preventDefault(), {once:true});
+                }
+                link.click();
+                return true;
+            })()
+            """, expected);
+        web.evaluateJavascript(next, result -> {
+            if (epoch != pageEpoch) return;
+            if ("true".equals(result)) pollNextGridPage(epoch, previous, expected, 0, false);
+            else finishGridPage(false);
+        });
+    }
+
+    private void pollNextGridPage(int epoch, JSONObject previous, int expected, int attempt, boolean restoringSource) {
+        handler.postDelayed(() -> {
+            if (isDestroyed() || epoch != pageEpoch || !loadingGridPage) return;
+            web.evaluateJavascript(catalogueScript, encoded -> {
+                if (epoch != pageEpoch || !loadingGridPage) return;
+                try {
+                    JSONObject data = new JSONObject((String) new org.json.JSONTokener(encoded).nextValue());
+                    if (data.optBoolean("login")) {
+                        suspendGridPaging(); catalogueCache.clear(); setNativeVisible(false); web.requestFocus(); return;
+                    }
+                    int page = data.optInt("page");
+                    JSONArray cards = data.getJSONArray("cards");
+                    boolean ready = data.optBoolean("ready") && !data.optBoolean("home");
+                    if (restoringSource && documentReady && catalogueUrl.equals(web.getUrl()) && ready && data.optBoolean("next") &&
+                            page == previous.optInt("page") && (expected == 0 || expected == data.optInt("nextPage"))) {
+                        requestNextGridPage(epoch, previous, expected);
+                        return;
+                    }
+                    boolean changedPage = expected > 0 && page == expected;
+                    if (!changedPage && (expected == 0 || page == 0)) {
+                        changedPage = !sameGridTitles(previous.getJSONArray("cards"), cards);
+                    }
+                    if (!restoringSource && ready && changedPage && (cards.length() > 0 || data.optBoolean("empty"))) {
+                        gridSourcePage = data;
+                        String actual = web.getUrl();
+                        if (actual != null && isSite(Uri.parse(actual))) {
+                            catalogueUrl = actual;
+                            catalogueCache.put(actual, new CatalogueCache(data));
+                        }
+                        tv.appendGridPage(cards, data.optBoolean("next"));
+                        gridDocumentReady = true;
+                        finishGridPage(true);
+                        return;
+                    }
+                } catch (Exception ignored) { /* The catalogue may still be replacing its results. */ }
+                if (attempt < 24) pollNextGridPage(epoch, previous, expected, attempt + 1, restoringSource);
+                else finishGridPage(false);
+            });
+        }, attempt == 0 ? 200 : 400);
+    }
+
+    private boolean sameGridTitles(JSONArray first, JSONArray second) {
+        if (first.length() != second.length()) return false;
+        for (int i = 0; i < first.length(); i++) {
+            if (!first.optJSONObject(i).optString("url").equals(second.optJSONObject(i).optString("url"))) return false;
+        }
+        return true;
+    }
+
+    private void finishGridPage(boolean success) {
+        loadingGridPage = false;
+        awaitingGridRetry = !success;
+        if (success) applyQueuedGridFilter();
+        else tv.failGridPage();
+    }
+
+    private void applyQueuedGridFilter() {
+        if (queuedGridFilters.isEmpty()) return;
+        String parameter = queuedGridFilters.keySet().iterator().next();
+        filterCatalogue(parameter, queuedGridFilters.remove(parameter));
+    }
+
+    private boolean gridFilterMatches(JSONObject page) {
+        JSONObject filters = page.optJSONObject("filters");
+        JSONObject option = filters == null ? null : filters.optJSONObject("sortby".equals(applyingGridFilter) ? "sort" : "genre");
+        return page.optBoolean("ready") && option != null && applyingGridFilterValue.equalsIgnoreCase(option.optString("current"));
+    }
+
+    private void failGridFilter(String message) {
+        applyingGridFilter = null;
+        queuedGridFilters.clear();
+        tv.status(message);
+    }
+
+    private void filterCatalogue(String parameter, String value) {
+        if (loadingGridPage || applyingGridFilter != null || (awaitingGridRetry && !catalogueUrl.equals(web.getUrl()))) {
+            queuedGridFilters.put(parameter, value);
+            return;
+        }
+        if (!documentReady || web.getUrl() == null || !isSite(Uri.parse(web.getUrl()))) {
+            tv.status("The filters are loading. Try again in a moment.");
+            return;
+        }
+        preserveCatalogueViews = false;
+        gridDocumentReady = false;
+        awaitingGridRetry = false;
+        applyingGridFilter = parameter;
+        applyingGridFilterValue = value;
+        tv.suspendGridPaging();
+        tv.rememberPage();
+        requestedCatalogueUrl = "";
+        int epoch = ++pageEpoch;
+        lastCatalogueFingerprint = "";
+        stableCatalogueReads = 0;
+        tv.loading(catalogueLabel);
+        String chooseFilter = String.format(java.util.Locale.ROOT, """
+            (() => {
+                const parameter = %s, value = %s;
+                const genreOptions = Array.from(document.querySelectorAll('.genre-filter input.checkbox[value]'));
+                const genreValue = input => input.value.replace(/_/g, ' ');
+                const activeGenres = parameter === 'genres' ? value : new URLSearchParams(location.search).get('genres') || '';
+                const wanted = activeGenres.toLowerCase().split(',');
+                const choice = parameter === 'sortby'
+                    ? Array.from(document.querySelectorAll('.sortby-filter li .option-value')).find(option => option.textContent.trim() === value)
+                    : value ? genreOptions.find(input => genreValue(input) === value) : document.querySelector('.genre-filter #selectall');
+                if (!choice || !genreOptions.length) return false;
+                for (const input of genreOptions) input.checked = wanted.includes(genreValue(input).toLowerCase());
+                choice.closest('li').click();
+                return true;
+            })()
+            """, JSONObject.quote(parameter), JSONObject.quote(value));
+        web.evaluateJavascript(chooseFilter, result -> {
+            if (epoch != pageEpoch) return;
+            if ("true".equals(result)) pollCatalogue(epoch, 0);
+            else failGridFilter("This filter isn’t available. Try reloading the listing.");
+        });
     }
 
     private String catalogueStateKey(String url) {
         Uri uri = Uri.parse(url); String path = uri.getPath();
         if (path != null && path.length() > 1 && path.endsWith("/")) path = path.substring(0, path.length() - 1);
         Uri.Builder key = uri.buildUpon().path(path).clearQuery().fragment(null);
-        for (String name : new String[]{"q", "page", "type", "abc", "genres", "sortby", "quality"}) {
+        for (String name : new String[]{"q", "search", "type", "abc", "genres", "sortby", "quality"}) {
             String value = uri.getQueryParameter(name); if (value != null) key.appendQueryParameter(name, value);
         }
         return key.build().toString();
@@ -514,7 +765,8 @@ public final class MainActivity extends Activity {
         if (player != null) { if (playbackControls != null && playbackControls.back()) return; stopPlayback(null); }
         else if (tv.getVisibility() == View.VISIBLE && tv.closeSearch()) return;
         else if (tv.isDetailShowing() || accountVisible || tv.getVisibility() != View.VISIBLE) returnToCatalogue();
-        else if (!catalogueLabel.equals("Home")) navigateCatalogue("https://gramaton.io/", "Home");
+        else if (tv.dismissDrawer()) return;
+        else if (!catalogueLabel.equals("Home")) { tv.focusCatalogueWhenReady(); navigateCatalogue("https://gramaton.io/", "Home"); }
         else super.onBackPressed();
     }
     @Override public void onTrimMemory(int level) {

@@ -10,11 +10,13 @@ The debug-signed Fire TV APK is available as `Gramaton-Fire-TV-v0.49.apk` in thi
 
 For developers rebuilding: use JDK 17, Android compile SDK 36, build tools 35.0.0, and the included Gradle 8.11.1 wrapper. Build with `./gradlew :app:assembleDebug :app:lintDebug`, or open this directory in Android Studio. Add `-PfireTv` to use the wide Fire TV launcher artwork. Compile SDK 36 does not require Android 16 on the TV; minimum Android API is 26. Amazon lists the Ember Artline (2026) as Fire OS 8 / Android API 30.
 
-Sign in directly inside the app (the desktop browser session is separate). The native library opens automatically. Use Left/Right to select posters, Up/Down to change rows, and Select to open movie details. Choose **Play fullscreen** or **Resume fullscreen**. Use the Search tab and the Fire TV keyboard to search Gramaton's movie catalogue. Home, Movies, Watchlist, Favorites and page controls are native. Account opens the website when sign-in or account access is needed. Back returns to the page and saves position. Backgrounding the app releases playback and saves position; select Play on return. Resume positions are local to this app installation, keyed by movie path. Different Gramaton accounts on the same installation currently share resume positions.
+Sign in directly inside the app. The native library opens automatically. Press Left from the first poster in a row to open the navigation drawer, then use Up/Down and Select to choose a destination. Press Right to return to the catalogue. Open **Search** from the drawer and enter a movie or TV title using the TV keyboard. Movies, TV, Watchlist, Favorites, and Search results use vertically scrolling grids that automatically load additional pages when available. Movies and TV offer **Sort** and **Genre** above the posters. Home has horizontal carousels with a **View all** tile wherever the website provides a full listing. **Account** opens the website for account access.
+
+Select a poster to open its details, then choose **Play fullscreen** or **Resume fullscreen**. Back returns to the listing and saves playback position. Backgrounding the app releases playback and saves position. Select Play on return. Each installation saves resume positions by movie path and shares those positions across Gramaton accounts on that device.
 
 ## Updates from GitHub Releases
 
-Select **Updates** in the top menu to check for a new version. Choose **Download** when offered, then confirm the install in the TV's package installer. Fire OS may ask you to allow Gramaton to install updates from this source. An in-place update retains the local Watchlist and resume history.
+Select **Updates** in the navigation drawer to check for a new version. Choose **Download** when offered, then confirm the install in the TV's package installer. Fire OS may ask you to allow Gramaton to install updates from this source. An in-place update retains the local Watchlist and resume history.
 
 ### Publishing an update
 
