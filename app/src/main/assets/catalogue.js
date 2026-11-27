@@ -4,15 +4,20 @@
     'recently-added-titles': 'Recently Added', 'new-series-title': 'Recent Episodes',
     'top-releases-this-year-title': '', 'favorites-list-title': 'Favorites'
   };
-  const isHome = location.pathname === '/';
+  const params = new URLSearchParams(location.search);
+  const query = params.get('q') || params.get('search') || '';
+  const isHome = location.pathname === '/' && !query;
   const titleLink = a => { try { const u = new URL(a.href); return u.origin === location.origin && /^\/(movies|series)\/\d+[^/]*\/?$/.test(u.pathname); } catch (_) { return false; } };
   const cards = [], sections = [], seen = new Set();
   let section = 'Featured';
-  for (const a of document.querySelectorAll('h1,h2,h3,h4,[id],a[href]')) {
+  const listing = isHome ? document : document.querySelector('#content .item-container') || document;
+  for (const a of listing.querySelectorAll('h1,h2,h3,h4,[id],a[href]')) {
     if (Object.prototype.hasOwnProperty.call(sectionIds, a.id)) {
       section = sectionIds[a.id] || a.textContent.replace(/\s*-?\s*View All\s*/i, '').trim();
-      const viewAll = a.querySelector('a.view_all') || a.querySelector('a[href]');
-      sections.push({label:section, url:viewAll ? viewAll.href : ''});
+      const viewAll = a.querySelector('a.view_all[href]');
+      const canOpenListing = isHome && viewAll && viewAll.origin === location.origin &&
+        (viewAll.pathname !== location.pathname || viewAll.search !== location.search) && !titleLink(viewAll);
+      sections.push({label:section, url:canOpenListing ? viewAll.href : ''});
       continue;
     }
     if (a.tagName.toLowerCase() !== 'a' || !titleLink(a) || a.closest('.slick-cloned')) continue;
@@ -43,9 +48,28 @@
       meta: [series ? 'TV series' : '', episode, year && year.textContent.trim(), genre && genre.textContent.trim()].filter(Boolean).join(' · ')});
     seen.add(key);
   }
-  const links = Array.from(document.querySelectorAll('a'));
-  const page = word => links.some(a => a.textContent.trim().toLowerCase() === word && !a.closest('.disabled') && a.getAttribute('aria-disabled') !== 'true');
-  return JSON.stringify({cards, sections, home:isHome, ready:!isHome || sections.length >= 4,
-    login:!!document.querySelector('input[type="password"]'), next:!isHome && page('next'), previous:!isHome && (page('prev') || page('previous')),
-    empty: !cards.length && /no (movies|results|titles|records|items)|nothing found/i.test(document.body.innerText)});
+  const nextLink = !isHome && Array.from(document.querySelectorAll('.pagination a')).find(a =>
+    (a.dataset.type === 'next' || a.textContent.trim().toLowerCase() === 'next') &&
+    !a.closest('.disabled') && a.getAttribute('aria-disabled') !== 'true');
+  const nextPage = nextLink && Number(nextLink.getAttribute('onclick')?.match(/\((\d+)\)/)?.[1]) || 0;
+  const page = Number(params.get('page')) || (nextPage > 1 ? nextPage - 1 : 0);
+  const hasFilters = /^\/(movies|series)\/?$/.test(location.pathname);
+  const sorts = Array.from(document.querySelectorAll('.sortby-filter li .option-value'), option => {
+    const label = option.textContent.trim();
+    return {label, value:label};
+  });
+  const genres = Array.from(document.querySelectorAll('.genre-filter input.checkbox[value]'), input => ({
+    label:input.labels[0]?.textContent.trim() || input.value,
+    value:input.value.replace(/_/g, ' ')
+  }));
+  const filters = hasFilters ? {
+    sort:{options:sorts, current:params.get('sortby') || document.querySelector('.sortby-filter .value')?.textContent.trim() || ''},
+    genre:{options:genres.length ? [{label:'All genres', value:''}, ...genres] : [], current:params.get('genres') || ''}
+  } : null;
+  const spinner = !isHome && document.getElementById('spinner');
+  const updating = spinner && spinner.getClientRects().length > 0;
+  const emptyListing = !isHome && document.readyState === 'complete' && !!document.querySelector('#content .item-container');
+  return JSON.stringify({cards, sections, filters, query, page, nextPage, home:isHome, ready:isHome ? sections.length >= 4 : !updating,
+    login:!!document.querySelector('input[type="password"]'), next:!!nextLink,
+    empty: !cards.length && !updating && (emptyListing || /no (movies|results|titles|records|items)|nothing found/i.test(document.body.innerText))});
 })()
