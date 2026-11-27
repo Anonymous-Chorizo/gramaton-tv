@@ -19,6 +19,10 @@
     const match = lines.match(new RegExp('(?:^|\\n)\\s*(?:' + label + ')\\s*:\\s*([^\\n]+)', 'i'));
     return match ? match[1].trim() : '';
   };
+  const imdbLinks = [].concat(media.sameAs || [], media.url || []);
+  const imdb = imdbLinks.map(value => typeof value === 'string' &&
+      value.match(/^https?:\/\/(?:www\.)?imdb\.com\/title\/(tt[0-9]+)(?:[/?#]|$)/i))
+    .find(Boolean);
   const year = (String(media.datePublished || labeled('Released|Release Date|Year')).match(/\b(?:18|19|20)\d{2}\b/) || [])[0];
   const genre = [].concat(media.genre || []).filter(Boolean).join(', ') || labeled('Genres?');
   const cast = [].concat(media.actor || []).map(actor => typeof actor === 'string' ? actor : actor && actor.name)
@@ -40,5 +44,5 @@
   const art = Array.from(document.images).filter(image => !image.alt.trim() && image.naturalWidth > 200 && /^https:/.test(image.currentSrc));
   const backdrop = art.find(image => image.naturalWidth > image.naturalHeight);
   const poster = art.find(image => image.naturalWidth < image.naturalHeight);
-  return JSON.stringify({backdrop:backdrop && backdrop.currentSrc,poster:poster && poster.currentSrc,ready:!!document.querySelector('a[href*="/player/videojs5.html"],a[href*="/player/native.html"]'),description,year,genre,cast,episodes,season,episode});
+  return JSON.stringify({backdrop:backdrop && backdrop.currentSrc,poster:poster && poster.currentSrc,ready:!!document.querySelector('a[href*="/player/videojs5.html"],a[href*="/player/native.html"]'),description,year,imdb:imdb && imdb[1],genre,cast,episodes,season,episode});
 })(__TITLE__)

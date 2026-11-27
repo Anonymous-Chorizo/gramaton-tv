@@ -1,7 +1,10 @@
 package io.gramaton.tv;
 
 import android.content.Context;
-import android.net.Uri;
+import androidx.media3.extractor.text.Subtitle;
+import androidx.media3.extractor.text.SubtitleParser;
+import androidx.media3.extractor.text.subrip.SubripParser;
+import androidx.media3.extractor.text.webvtt.WebvttParser;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.*;
@@ -9,81 +12,246 @@ import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
-/** Public guest API; never receives Gramaton cookies, credentials or media URLs. */
+@androidx.annotation.OptIn(markerClass = androidx.media3.common.util.UnstableApi.class)
 final class SubtitleProvider {
     private static final String ORIGIN = "https://subtitles.website";
-    static final class Match {
-        final String id, label;
-        final int downloads;
-        Match(String id, String label, int downloads) { this.id = id; this.label = label; this.downloads = downloads; }
-    }
-    static List<Match> search(JSONObject movie, int season, int episode) throws Exception {
+    private static final String METADATA = "https://v3-cinemeta.stremio.io";
+    private static final int MAX_BYTES = 2 * 1024 * 1024;
+
+    static Subtitle find(Context context, JSONObject movie, int season, int episode, String key, long durationMs) throws Exception {
+        File target = cacheFile(context, key);
+        if (target.isFile() && target.length() <= MAX_BYTES) {
+            try (InputStream input = new FileInputStream(target)) {
+                Subtitle cached = parse(SubtitleText.decode(read(input)));
+                if (SubtitleValidation.isEnglishForPlayback(cached, durationMs)) return cached;
+                target.delete();
+            } catch (IOException | RuntimeException ignored) {
+                target.delete();
+            }
+        }
+
         String title = movie.optString("title").trim();
         boolean series = movie.optBoolean("series");
-        if (series && (season <= 0 || episode <= 0)) throw new IOException("Choose a season and episode first.");
+        if (title.isEmpty() || (series && (season <= 0 || episode <= 0))) return null;
+        String year = movie.optString("subtitleYear");
+        if (year.isEmpty()) year = SubtitleText.yearIn(movie.optString("meta"));
         String query = title + (series ? String.format(Locale.US, " S%02dE%02d", season, episode) : "");
-        String url = ORIGIN + "/strapi/api/search/subtitles?format=srt&language=en&title=" + URLEncoder.encode(query, "UTF-8");
-        JSONArray data = json(url).optJSONArray("data");
-        List<Match> matches = new ArrayList<>();
-        java.util.regex.Matcher yearMatch = java.util.regex.Pattern.compile("\\b(?:19|20)\\d{2}\\b").matcher(movie.optString("meta"));
-        String year = yearMatch.find() ? yearMatch.group() : "";
-        if (data != null) for (int i = 0; i < data.length(); i++) {
-            JSONObject item = data.getJSONObject(i);
-            String release = item.optString("release");
-            String film = item.optString("film_title");
+        String imdb = movie.optString("subtitleImdbId");
+        if (!imdb.matches("tt[0-9]+")) imdb = "";
+        String type = series ? "series" : "movie";
+
+        // A title alone cannot distinguish remakes. Resolve it first when
+        // the movie page has neither a release year nor an IMDb ID.
+        if (!series && imdb.isEmpty() && year.isEmpty()) {
+            TitleIdentity identity = resolveImdb(type, title, year);
+            if (identity == null) return null;
+            imdb = identity.imdb;
+            year = identity.year;
+        }
+        if (!imdb.isEmpty()) {
+            Subtitle byId = downloadById(type, imdb, season, episode, target, durationMs);
+            if (byId != null) return byId;
+        }
+        if (!series && year.isEmpty()) return null;
+        JSONArray results = json(ORIGIN + "/strapi/api/search/subtitles?format=srt&language=en&title=" + encode(query)).optJSONArray("data");
+        List<JSONObject> matches = new ArrayList<>();
+        if (results != null) for (int i = 0; i < results.length(); i++) {
+            JSONObject item = results.optJSONObject(i);
+            if (item == null) continue;
             JSONObject language = item.optJSONObject("language");
-            if (language == null || !"en".equals(language.optString("code")) || !"srt".equalsIgnoreCase(item.optString("format"))) continue;
-            if (!SubtitleText.sameTitle(title, film)) continue;
-            if (!series && !SubtitleText.compatibleYear(year, release)) continue;
-            if (series && !SubtitleText.sameEpisode(release, season, episode)) continue;
-            String id = item.optString("id"); if (!id.matches("[A-Za-z0-9_-]+")) continue;
-            matches.add(new Match(id, release.isEmpty() ? film : release, item.optInt("downloads")));
-            if (matches.size() >= 30) break;
+            String release = item.optString("release");
+            if (language == null || !isEnglish(language.optString("code"))
+                    || !"srt".equalsIgnoreCase(item.optString("format"))
+                    || !SubtitleText.sameTitle(title, item.optString("film_title"))
+                    || !item.optString("id").matches("[A-Za-z0-9_-]+")) continue;
+            if (series ? !SubtitleText.sameEpisode(release, season, episode)
+                    : SubtitleText.isEpisode(release) || !year.equals(SubtitleText.yearIn(release))) continue;
+            matches.add(item);
         }
-        matches.sort((a,b) -> Integer.compare(b.downloads, a.downloads));
-        return matches;
-    }
-    static File cached(Context context, String movieKey) throws Exception {
-        byte[] hash = java.security.MessageDigest.getInstance("SHA-256").digest(movieKey.getBytes(StandardCharsets.UTF_8));
-        StringBuilder name = new StringBuilder(); for (byte b : hash) name.append(String.format(Locale.US, "%02x", b & 255));
-        File directory = new File(context.getCacheDir(), "english-subtitles");
-        if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("Could not create subtitle cache.");
-        return new File(directory, name + ".srt");
-    }
-    static File download(Context context, Match match, String movieKey) throws Exception {
-        JSONObject response = json(ORIGIN + "/strapi/api/search/download/" + match.id);
-        String path = response.optString("download_url");
-        if (!path.startsWith("/uploads/") || path.contains("..")) throw new IOException("The subtitle provider returned an invalid download.");
-        byte[] bytes = request(ORIGIN + "/strapi" + path, 2 * 1024 * 1024);
-        String srt = SubtitleText.decode(bytes);
-        if (!SubtitleText.validSrt(srt)) throw new IOException("The downloaded file was not a supported subtitle file.");
-        File target = cached(context, movieKey), temp = File.createTempFile("subtitle-", ".tmp", target.getParentFile());
-        try {
-            try (FileOutputStream out = new FileOutputStream(temp)) { out.write(srt.getBytes(StandardCharsets.UTF_8)); }
-            if (!temp.renameTo(target)) throw new IOException("Could not save subtitles.");
-        } finally { temp.delete(); }
-        return target;
-    }
-    private static JSONObject json(String url) throws Exception { return new JSONObject(new String(request(url, 2 * 1024 * 1024), StandardCharsets.UTF_8)); }
-    private static byte[] request(String url, int limit) throws Exception {
-        for (int redirects = 0; redirects < 4; redirects++) {
-            URL target = new URL(url);
-            if (!"https".equals(target.getProtocol()) || !("subtitles.website".equals(target.getHost()) || "www.subtitles.website".equals(target.getHost()))) throw new IOException("Invalid subtitle provider address.");
-            HttpURLConnection conn = (HttpURLConnection)target.openConnection();
-            conn.setConnectTimeout(10000); conn.setReadTimeout(15000); conn.setInstanceFollowRedirects(false);
-            conn.setRequestProperty("User-Agent", "GramatonTV/0.12");
+        final String expectedYear = year;
+        matches.sort(Comparator.<JSONObject>comparingInt(item ->
+            !expectedYear.isEmpty() && expectedYear.equals(SubtitleText.yearIn(item.optString("release"))) ? 0 : 1)
+            .thenComparing(Comparator.comparingInt((JSONObject item) -> item.optInt("downloads")).reversed()));
+        for (int i = 0; i < Math.min(3, matches.size()); i++) {
+            JSONObject response;
             try {
-                int status = conn.getResponseCode();
-                if (status >= 300 && status < 400) { String location = conn.getHeaderField("Location"); if (location == null) throw new IOException("Invalid subtitle redirect."); url = new URL(target, location).toString(); continue; }
-                if (status == 429) throw new IOException("The free subtitle service’s daily limit has been reached. Try again tomorrow.");
-                if (status != 200) throw new IOException("Subtitle service unavailable (HTTP " + status + "). Try again later.");
-                try (InputStream in = conn.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-                    byte[] buffer = new byte[8192]; int n;
-                    while ((n = in.read(buffer)) != -1) { if (out.size() + n > limit) throw new IOException("Subtitle response was too large."); out.write(buffer, 0, n); }
-                    return out.toByteArray();
-                }
-            } finally { conn.disconnect(); }
+                response = json(ORIGIN + "/strapi/api/search/download/" + matches.get(i).getString("id"));
+            } catch (MissingFile unavailable) {
+                continue;
+            }
+            String path = response.optString("download_url");
+            if (!path.startsWith("/uploads/") || path.contains("..")) continue;
+            Subtitle result = download(ORIGIN + "/strapi" + path, target, durationMs);
+            if (result != null) return result;
         }
-        throw new IOException("Too many subtitle service redirects.");
+        if (!imdb.isEmpty()) return null;
+        TitleIdentity resolved = resolveImdb(type, title, year);
+        return resolved == null ? null : downloadById(type, resolved.imdb, season, episode, target, durationMs);
     }
+
+    private static TitleIdentity resolveImdb(String type, String title, String year) throws Exception {
+        JSONArray results;
+        try {
+            results = json(METADATA + "/catalog/" + type + "/top/search=" + encode(title) + ".json").optJSONArray("metas");
+        } catch (MissingFile unavailable) {
+            return null;
+        }
+        TitleIdentity found = null;
+        if (results != null) for (int i = 0; i < results.length(); i++) {
+            JSONObject item = results.optJSONObject(i);
+            if (item == null || !SubtitleText.sameTitle(title, item.optString("name"))) continue;
+            String releaseYear = SubtitleText.yearIn(item.optString("releaseInfo"));
+            if (!year.isEmpty() && !year.equals(releaseYear)) continue;
+            String id = item.optString("id");
+            if (!id.matches("tt[0-9]+")) continue;
+            if (found != null && !found.imdb.equals(id)) return null;
+            found = new TitleIdentity(id, releaseYear);
+        }
+        return found;
+    }
+
+    private static Subtitle downloadById(String type, String imdb, int season, int episode, File target,
+            long durationMs) throws Exception {
+        String id = "series".equals(type) ? imdb + ":" + season + ":" + episode : imdb;
+        JSONArray results;
+        try {
+            results = json(ORIGIN + "/stremio/subtitles/" + type + "/" + id + ".json").optJSONArray("subtitles");
+        } catch (MissingFile unavailable) {
+            return null;
+        }
+        int attempts = 0;
+        if (results != null) for (int i = 0; i < results.length() && attempts < 3; i++) {
+            JSONObject item = results.optJSONObject(i);
+            if (item == null || !isEnglish(item.optString("lang"))) continue;
+            String url = item.optString("url");
+            try {
+                if (!trusted(new URL(url), false)) continue;
+            } catch (MalformedURLException invalid) {
+                continue;
+            }
+            attempts++;
+            Subtitle subtitle = download(url, target, durationMs);
+            if (subtitle != null) return subtitle;
+        }
+        return null;
+    }
+
+    private static final class TitleIdentity {
+        final String imdb;
+        final String year;
+
+        TitleIdentity(String imdb, String year) {
+            this.imdb = imdb;
+            this.year = year;
+        }
+    }
+
+    private static boolean isEnglish(String language) {
+        return "en".equalsIgnoreCase(language) || "eng".equalsIgnoreCase(language);
+    }
+
+    private static String encode(String value) throws UnsupportedEncodingException {
+        return URLEncoder.encode(value, "UTF-8").replace("+", "%20");
+    }
+
+    private static File cacheFile(Context context, String key) throws Exception {
+        byte[] hash = java.security.MessageDigest.getInstance("SHA-256").digest(key.getBytes(StandardCharsets.UTF_8));
+        StringBuilder name = new StringBuilder();
+        for (byte value : hash) name.append(String.format(Locale.US, "%02x", value & 255));
+        File directory = new File(context.getCacheDir(), "english-captions-checked");
+        if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("Couldn’t open the subtitle cache.");
+        return new File(directory, name + ".txt");
+    }
+
+    private static Subtitle download(String url, File target, long durationMs) throws Exception {
+        String text;
+        try {
+            text = SubtitleText.decode(request(url));
+        } catch (MissingFile unavailable) {
+            return null;
+        }
+        Subtitle subtitle;
+        try {
+            subtitle = parse(text);
+        } catch (IOException | RuntimeException invalid) {
+            return null;
+        }
+        if (!SubtitleValidation.isEnglishForPlayback(subtitle, durationMs)) return null;
+        File temp = File.createTempFile("subtitle-", ".tmp", target.getParentFile());
+        try {
+            try (FileOutputStream output = new FileOutputStream(temp)) {
+                output.write(text.getBytes(StandardCharsets.UTF_8));
+            }
+            if (!temp.renameTo(target)) throw new IOException("Couldn’t save subtitles.");
+        } finally {
+            temp.delete();
+        }
+        return subtitle;
+    }
+
+    static Subtitle parse(String text) throws IOException {
+        SubtitleParser parser;
+        if (text.startsWith("WEBVTT")) parser = new WebvttParser();
+        else if (SubtitleText.validSrt(text)) parser = new SubripParser();
+        else throw new IOException("Unsupported subtitle file.");
+        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+        Subtitle subtitle = parser.parseToLegacySubtitle(bytes, 0, bytes.length);
+        if (subtitle.getEventTimeCount() == 0) throw new IOException("Subtitle file has no captions.");
+        return subtitle;
+    }
+
+    private static JSONObject json(String url) throws Exception {
+        return new JSONObject(new String(request(url), StandardCharsets.UTF_8));
+    }
+
+    private static boolean trusted(URL url, boolean metadata) {
+        String host = url.getHost();
+        return "https".equals(url.getProtocol()) && url.getUserInfo() == null
+            && (url.getPort() == -1 || url.getPort() == 443)
+            && (metadata ? "v3-cinemeta.strem.io".equals(host) : "subtitles.website".equals(host) || "www.subtitles.website".equals(host));
+    }
+
+    private static byte[] request(String address) throws IOException {
+        URL url = new URL(address);
+        boolean metadata = "v3-cinemeta.strem.io".equals(url.getHost());
+        for (int redirects = 0; redirects < 4; redirects++) {
+            if (!trusted(url, metadata)) throw new IOException("Unexpected subtitle provider address.");
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setConnectTimeout(6000);
+            connection.setReadTimeout(8000);
+            connection.setInstanceFollowRedirects(false);
+            connection.setRequestProperty("User-Agent", "GramatonTV");
+            try {
+                int status = connection.getResponseCode();
+                if (status >= 300 && status < 400) {
+                    String location = connection.getHeaderField("Location");
+                    if (location == null) throw new IOException("Invalid subtitle redirect.");
+                    url = new URL(url, location);
+                    continue;
+                }
+                if (status == 429) throw new QuotaExceeded();
+                if (status == 404) throw new MissingFile();
+                if (status != 200) throw new IOException("Subtitle service HTTP " + status);
+                try (InputStream input = connection.getInputStream()) {
+                    return read(input);
+                }
+            } finally {
+                connection.disconnect();
+            }
+        }
+        throw new IOException("Too many subtitle redirects.");
+    }
+
+    private static byte[] read(InputStream input) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        for (int count; (count = input.read(buffer)) != -1; ) {
+            if (output.size() + count > MAX_BYTES) throw new IOException("Subtitle response is too large.");
+            output.write(buffer, 0, count);
+        }
+        return output.toByteArray();
+    }
+
+    static final class QuotaExceeded extends IOException {}
+    private static final class MissingFile extends IOException {}
 }

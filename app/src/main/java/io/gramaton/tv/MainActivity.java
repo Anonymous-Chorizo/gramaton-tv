@@ -42,9 +42,6 @@ public final class MainActivity extends Activity {
     private PlaybackControls playbackControls;
     private final java.util.concurrent.ExecutorService subtitleWorker = java.util.concurrent.Executors.newSingleThreadExecutor();
     private int subtitleEpoch;
-    private Uri subtitleUri;
-    private boolean subtitlesEnabled;
-    private String subtitleMovieKey = "";
     private ExoPlayer player;
     private final ArrayList<Source> sources = new ArrayList<>();
     private String titleKey = "";
@@ -54,6 +51,7 @@ public final class MainActivity extends Activity {
     private boolean active;
     private boolean resolving;
     private TvBrowser tv;
+    private AppUpdates appUpdates;
     private String catalogueUrl = "https://gramaton.io/", catalogueLabel = "Home";
     private JSONObject currentMovie;
     private boolean preserveReturningCatalogue;
@@ -78,6 +76,7 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
+        appUpdates = new AppUpdates(this);
         root = new FrameLayout(this);
         root.setBackgroundColor(android.graphics.Color.BLACK);
         getWindow().setBackgroundDrawableResource(android.R.color.black);
@@ -127,12 +126,11 @@ public final class MainActivity extends Activity {
                 if (label.equals("back")) returnToCatalogue(); else navigateCatalogue(url, label);
             }
             @Override public void open(JSONObject movie) { openMovie(movie); }
-            @Override public void play() { subtitleEpoch++; subtitleUri = null; subtitlesEnabled = false; resolveMovie(); }
-            @Override public void playSubtitles() { findSubtitles(); }
-            @Override public void subtitleSettings() { showSubtitleSettings(false); }
+            @Override public void play() { subtitleEpoch++; resolveMovie(); }
             @Override public void search(String query) { searchCatalogue(query); }
             @Override public void page(String direction) { turnPage(direction); }
             @Override public void account() { showAccount(); }
+            @Override public void checkForUpdates() { appUpdates.check(); }
             @Override public void exitToFireTv() {
                 android.content.Intent home = new android.content.Intent(android.content.Intent.ACTION_MAIN);
                 home.addCategory(android.content.Intent.CATEGORY_HOME);
@@ -260,6 +258,8 @@ public final class MainActivity extends Activity {
                     JSONObject data = new JSONObject((String)new org.json.JSONTokener(encoded).nextValue());
                     if (data.optBoolean("ready")) {
                         selectedSeason = data.optInt("season"); selectedEpisode = data.optInt("episode");
+                        currentMovie.put("subtitleYear", data.optString("year", ""));
+                        currentMovie.put("subtitleImdbId", data.optString("imdb", ""));
                         String key = playbackKey(Uri.parse(web.getUrl()));
                         tv.detailsReady(data.optString("backdrop"), data.optString("poster"), data.optString("description"), data.optString("year"), data.optString("genre"), data.optString("cast"), getPreferences(0).getLong(key, 0), data.optJSONArray("episodes"));
                         return;
@@ -367,12 +367,6 @@ public final class MainActivity extends Activity {
     }
 
 
-    private void showSubtitleSettings(boolean thenPlay) {
-        new android.app.AlertDialog.Builder(this).setTitle("English subtitles")
-            .setMessage("Free subtitles from subtitles.website. No account needed. Downloads are cached on this device. If the timing is wrong, choose another release. During playback, press Select to show controls, then use CC to turn subtitles off or on.")
-            .setPositiveButton("Choose another release", (d, w) -> { subtitleUri = null; subtitleMovieKey = ""; findSubtitles(true); })
-            .setNegativeButton("Close", null).show();
-    }
     private int playbackSubtitleRequest = -1;
 
     private void findPlaybackSubtitles() {
@@ -382,91 +376,28 @@ public final class MainActivity extends Activity {
         final PlaybackControls controls = playbackControls;
         final JSONObject movie = currentMovie;
         final int season = selectedSeason, episode = selectedEpisode;
-        final String key = playbackKey(Uri.parse(movie.optString("url")));
+        final String key = titleKey;
+        final long durationMs = player.getDuration();
         controls.showNotice("Searching for English subtitles…");
         subtitleWorker.execute(() -> {
-            java.io.File file = null;
+            androidx.media3.extractor.text.Subtitle subtitle = null;
+            String notice = "No matching English subtitles found";
             try {
-                java.io.File cached = SubtitleProvider.cached(this, key);
-                if (cached.isFile() && cached.length() > 0) {
-                    file = cached;
-                } else {
-                    java.util.List<SubtitleProvider.Match> matches = SubtitleProvider.search(movie, season, episode);
-                    if (!matches.isEmpty()) file = SubtitleProvider.download(this, matches.get(0), key);
-                }
-            } catch (Exception ignored) {
-                // A failed lookup leaves playback running.
+                subtitle = SubtitleProvider.find(this, movie, season, episode, key, durationMs);
+            } catch (SubtitleProvider.QuotaExceeded quota) {
+                notice = "Subtitle service limit reached. Try again later.";
+            } catch (Exception error) {
+                notice = "Couldn’t reach or read the subtitle service. Try again.";
             }
-            final java.io.File result = file;
+            final androidx.media3.extractor.text.Subtitle result = subtitle;
+            final String message = notice;
             handler.post(() -> {
                 if (playbackSubtitleRequest == epoch) playbackSubtitleRequest = -1;
                 if (!active || epoch != subtitleEpoch || playbackControls != controls || player == null) return;
-                if (result == null) {
-                    controls.showNotice("English subtitles unavailable");
-                    return;
-                }
-                MediaItem item = player.getCurrentMediaItem();
-                if (item == null) return;
-                subtitleUri = Uri.fromFile(result);
-                subtitleMovieKey = key;
-                subtitlesEnabled = true;
-                long position = player.getCurrentPosition();
-                player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
-                    .setPreferredTextLanguage("en")
-                    .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, false).build());
-                player.setMediaItem(item.buildUpon().setSubtitleConfigurations(
-                    java.util.Collections.singletonList(englishSubtitle())).build(), position);
-                player.prepare();
-                controls.showNotice("English subtitles on");
+                if (result == null) controls.showNotice(message);
+                else controls.enableExternalSubtitles(result);
             });
         });
-    }
-
-    private void findSubtitles() { findSubtitles(false); }
-    private void findSubtitles(boolean chooseRelease) {
-        if (currentMovie == null || resolving || player != null) return;
-        String key = "";
-        final int epoch = ++subtitleEpoch;
-        final JSONObject movie = currentMovie;
-        final int season = selectedSeason, episode = selectedEpisode;
-        final String movieKey = playbackKey(Uri.parse(movie.optString("url")));
-        if (!chooseRelease && movieKey.equals(subtitleMovieKey) && subtitleUri != null) { subtitlesEnabled = true; resolveMovie(); return; }
-        tv.status("Searching for English subtitles…");
-        subtitleWorker.execute(() -> {
-            try {
-                java.io.File cached = SubtitleProvider.cached(this, movieKey);
-                if (!chooseRelease && cached.isFile()) {
-                    handler.post(() -> { if (!active || epoch != subtitleEpoch || currentMovie != movie) return; subtitleUri = Uri.fromFile(cached); subtitleMovieKey = movieKey; subtitlesEnabled = true; resolveMovie(); }); return;
-                }
-                java.util.List<SubtitleProvider.Match> matches = SubtitleProvider.search(movie, season, episode);
-                handler.post(() -> {
-                    if (!active || epoch != subtitleEpoch || currentMovie != movie) return;
-                    if (matches.isEmpty()) { subtitleFailure("No English subtitle matches found.", epoch); return; }
-                    if (!chooseRelease) { downloadSubtitle(key, matches.get(0), epoch, movieKey); return; }
-                    String[] labels = new String[matches.size()]; for (int i = 0; i < labels.length; i++) labels[i] = matches.get(i).label;
-                    new android.app.AlertDialog.Builder(this).setTitle("Choose English subtitles · check release/cut")
-                        .setItems(labels, (d, which) -> downloadSubtitle(key, matches.get(which), epoch, movieKey))
-                        .setNeutralButton("Play without subtitles", (d, w) -> { subtitleUri = null; subtitlesEnabled = false; resolveMovie(); })
-                        .setNegativeButton("Cancel", null).show();
-                });
-            } catch (Exception error) { handler.post(() -> { if (active && epoch == subtitleEpoch) subtitleFailure(error.getMessage(), epoch); }); }
-        });
-    }
-    private void downloadSubtitle(String key, SubtitleProvider.Match match, int epoch, String movieKey) {
-        tv.status("Downloading English subtitles…");
-        subtitleWorker.execute(() -> {
-            try {
-                java.io.File file = SubtitleProvider.download(this, match, movieKey);
-                handler.post(() -> { if (!active || epoch != subtitleEpoch) return; subtitleUri = Uri.fromFile(file); subtitleMovieKey = movieKey; subtitlesEnabled = true; resolveMovie(); });
-            } catch (Exception error) { handler.post(() -> { if (active && epoch == subtitleEpoch) subtitleFailure(error.getMessage(), epoch); }); }
-        });
-    }
-    private void subtitleFailure(String message, int epoch) {
-        tv.status("Subtitles unavailable. You can retry or play without subtitles.");
-        new android.app.AlertDialog.Builder(this).setTitle("Subtitles unavailable").setMessage(message == null ? "Please try again." : message)
-            .setPositiveButton("Retry", (d, w) -> { if (epoch == subtitleEpoch) findSubtitles(); })
-            .setNeutralButton("Play without subtitles", (d, w) -> { subtitleUri = null; subtitlesEnabled = false; resolveMovie(); })
-            .setNegativeButton("Cancel", null).show();
     }
 
     private void enterFullscreen() {
@@ -480,6 +411,8 @@ public final class MainActivity extends Activity {
         } else getWindow().getDecorView().setSystemUiVisibility(5894);
     }
     private void startSource(long position, boolean shouldPlay) {
+        boolean embeddedSubtitles = player != null && !player.getTrackSelectionParameters()
+            .disabledTrackTypes.contains(androidx.media3.common.C.TRACK_TYPE_TEXT);
         if (player != null) { if (playbackControls != null) playbackControls.bind(null); playerView.setPlayer(null); player.release(); }
         Source source = sources.get(sourceIndex);
         DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
@@ -510,23 +443,14 @@ public final class MainActivity extends Activity {
             }
         });
         player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
-            .setPreferredTextLanguage("en").setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, !subtitlesEnabled).build());
-        MediaItem.Builder item = new MediaItem.Builder().setUri(source.uri);
-        if (subtitleUri != null) item.setSubtitleConfigurations(java.util.Collections.singletonList(
-            englishSubtitle()));
-        player.setMediaItem(item.build(), Math.max(0, position));
+            .setPreferredTextLanguage("en").setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, !embeddedSubtitles).build());
+        player.setMediaItem(MediaItem.fromUri(source.uri), Math.max(0, position));
         player.prepare();
         player.setPlayWhenReady(shouldPlay);
         if (playbackControls != null) playbackControls.bind(player);
     }
-    private MediaItem.SubtitleConfiguration englishSubtitle() {
-        return new MediaItem.SubtitleConfiguration.Builder(subtitleUri).setMimeType(androidx.media3.common.MimeTypes.APPLICATION_SUBRIP)
-                .setLanguage("en").setLabel("English · subtitles.website").setSelectionFlags(androidx.media3.common.C.SELECTION_FLAG_DEFAULT).build();
-    }
-
     private boolean lowerQuality() {
         if (player == null || sourceIndex + 1 >= sources.size()) return false;
-        subtitlesEnabled = !player.getTrackSelectionParameters().disabledTrackTypes.contains(androidx.media3.common.C.TRACK_TYPE_TEXT);
         long position = player.getCurrentPosition();
         boolean shouldPlay = player.getPlayWhenReady();
         sourceIndex++;
@@ -602,6 +526,7 @@ public final class MainActivity extends Activity {
         handler.removeCallbacksAndMessages(null); subtitleEpoch++; subtitleWorker.shutdownNow();
         if (playbackControls != null) playbackControls.dispose();
         if (player != null) { savePosition(); player.release(); }
+        appUpdates.close();
         tv.dispose();
         web.destroy();
         super.onDestroy();

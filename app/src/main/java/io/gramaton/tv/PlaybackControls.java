@@ -10,6 +10,9 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.widget.*;
+import androidx.media3.common.text.Cue;
+import androidx.media3.extractor.text.Subtitle;
+import androidx.media3.ui.SubtitleView;
 import androidx.media3.common.*;
 import androidx.media3.ui.PlayerView;
 import androidx.media3.exoplayer.ExoPlayer;
@@ -21,6 +24,11 @@ final class PlaybackControls extends FrameLayout {
     interface Actions { void findSubtitles(); }
     private final Activity activity;
     private final PlayerView video;
+    private final SubtitleView downloadedCaptions;
+    private Subtitle externalSubtitle;
+    private List<Cue> displayedCues = java.util.Collections.emptyList();
+    private boolean externalEnabled;
+    private boolean awaitingFirstCaption;
     private final Actions actions;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final LinearLayout chrome, buttons, menu;
@@ -38,6 +46,11 @@ final class PlaybackControls extends FrameLayout {
     PlaybackControls(Activity activity, PlayerView video, String title, String metadata, Actions actions) {
         super(activity); this.activity = activity; this.video = video; this.actions = actions;
         setFocusable(true); setFocusableInTouchMode(true); setClipChildren(false);
+        downloadedCaptions = new SubtitleView(activity);
+        downloadedCaptions.setUserDefaultStyle();
+        downloadedCaptions.setUserDefaultTextSize();
+        downloadedCaptions.setVisibility(GONE);
+        addView(downloadedCaptions, new FrameLayout.LayoutParams(-1, -1));
         chrome = new LinearLayout(activity); chrome.setOrientation(LinearLayout.VERTICAL); chrome.setPadding(dp(48), dp(40), dp(48), dp(28));
         chrome.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{0x00000000,0xb8000000,0xf0000000}));
         addView(chrome, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
@@ -117,9 +130,10 @@ final class PlaybackControls extends FrameLayout {
     void bind(ExoPlayer next){
         if(player!=null)player.removeListener(listener);player=next;seek=null;pointerSeeking=false;closePanel();
         if(next!=null){next.addListener(listener);show();handler.removeCallbacks(pulse);handler.post(pulse);}
+        refreshExternalCaptions();
     }
     private final Player.Listener listener=new Player.Listener(){
-        @Override public void onEvents(Player p,Player.Events events){update();if(!p.getPlayWhenReady()||p.getPlaybackState()==Player.STATE_ENDED)show();else scheduleHide();}
+        @Override public void onEvents(Player p,Player.Events events){refreshExternalCaptions();update();if(!p.getPlayWhenReady()||p.getPlaybackState()==Player.STATE_ENDED)show();else scheduleHide();}
     };
     private final Runnable pulse=new Runnable(){@Override public void run(){if(disposed||player==null)return;update();handler.postDelayed(this,500);}};
     private final Runnable hideAction=this::hide;
@@ -131,7 +145,7 @@ final class PlaybackControls extends FrameLayout {
     private long duration(){return player==null?0:Math.max(0,player.getDuration());}
     private boolean seekable(){return player!=null&&duration()>0&&player.isCurrentMediaItemSeekable()&&player.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM);}
     private void update(){
-        if(player==null)return;if(visible&&video.getSubtitleView()!=null&&video.getHeight()>0)video.getSubtitleView().setBottomPaddingFraction(Math.min(.65f,(chrome.getHeight()+dp(16))/(float)video.getHeight()));long total=duration(),position=seek==null?Math.max(0,player.getCurrentPosition()):seek.candidate();
+        if(player==null)return;updateCaptionPadding();long total=duration(),position=seek==null?Math.max(0,player.getCurrentPosition()):seek.candidate();
         if(!pointerSeeking)timeline.setProgress(total>0?(int)(10000d*PlaybackTimeline.clamp(position,total)/total):0);
         timeline.setSecondaryProgress(total>0?(int)(10000d*PlaybackTimeline.clamp(player.getBufferedPosition(),total)/total):0);
         elapsed.setText(PlaybackTimeline.time(position));remaining.setText(total>0?"−"+PlaybackTimeline.time(Math.max(0,total-position)):"Duration unavailable");
@@ -141,9 +155,63 @@ final class PlaybackControls extends FrameLayout {
         state.setVisibility(status.isEmpty() ? View.GONE : View.VISIBLE);
         seekHint.setText(seek!=null?PlaybackTimeline.time(position)+"   ·   Select to play   ·   Back to cancel":"");
         long remainingMs=Math.max(0,total-position);endTime.setText(total>0?"Ends at "+java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(new Date(System.currentTimeMillis()+(long)(remainingMs/Math.max(.1d,player.getPlaybackParameters().speed)))):"");
-        boolean cc=!player.getTrackSelectionParameters().disabledTrackTypes.contains(C.TRACK_TYPE_TEXT);captions.setText(cc?"CC On":"CC");
+        boolean cc = externalEnabled ? !awaitingFirstCaption : player.getCurrentTracks().isTypeSelected(C.TRACK_TYPE_TEXT);
+        captions.setText(cc ? "CC On" : "CC");
         buffering.setVisibility(player.getPlaybackState()==Player.STATE_BUFFERING?VISIBLE:GONE);
     }
+    void enableExternalSubtitles(Subtitle subtitle) {
+        externalSubtitle = subtitle;
+        selectExternalSubtitles();
+    }
+
+    private void selectExternalSubtitles() {
+        externalEnabled = true;
+        awaitingFirstCaption = true;
+        setEmbeddedSubtitlesEnabled(false);
+        downloadedCaptions.setVisibility(VISIBLE);
+        refreshExternalCaptions();
+        if (awaitingFirstCaption) showNotice("Waiting for the next caption…");
+        update();
+    }
+
+    private void disableExternalSubtitles() {
+        externalEnabled = false;
+        awaitingFirstCaption = false;
+        downloadedCaptions.setVisibility(GONE);
+        refreshExternalCaptions();
+    }
+
+    private void setEmbeddedSubtitlesEnabled(boolean enabled) {
+        player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !enabled).build());
+    }
+
+    private void updateCaptionPadding() {
+        if (video.getHeight() == 0) return;
+        float padding = visible ? Math.min(.65f, (chrome.getHeight() + dp(16)) / (float) video.getHeight()) : .08f;
+        downloadedCaptions.setBottomPaddingFraction(padding);
+        if (video.getSubtitleView() != null) video.getSubtitleView().setBottomPaddingFraction(padding);
+    }
+
+    private final Runnable captionPulse = this::refreshExternalCaptions;
+
+    private void refreshExternalCaptions() {
+        handler.removeCallbacks(captionPulse);
+        boolean display = !disposed && player != null && externalEnabled && externalSubtitle != null;
+        List<Cue> cues = display ? externalSubtitle.getCues(player.getCurrentPosition() * 1000)
+            : java.util.Collections.emptyList();
+        if (!displayedCues.equals(cues)) {
+            displayedCues = cues;
+            downloadedCaptions.setCues(cues);
+        }
+        if (display && awaitingFirstCaption && !cues.isEmpty()) {
+            awaitingFirstCaption = false;
+            captions.setText("CC On");
+            showNotice("English subtitles on");
+        }
+        if (display && player.isPlaying()) handler.postDelayed(captionPulse, 100);
+    }
+
     void showNotice(String value){feedback.setText(value);feedback.setVisibility(VISIBLE);feedback.announceForAccessibility(value);handler.removeCallbacks(clearFeedback);handler.postDelayed(clearFeedback,1600);}
     private void toggle(){if(player==null)return;if(seek!=null){commitSeek();return;}if(player.getPlaybackState()==Player.STATE_ENDED){player.seekTo(0);player.play();}else player.setPlayWhenReady(!player.getPlayWhenReady());show();}
     private void skip(long delta){if(!seekable()){showNotice("Seeking is not available yet");return;}player.seekTo(PlaybackTimeline.offset(player.getCurrentPosition(),delta,duration()));showNotice(delta<0?"↶ 10 seconds":"10 seconds ↷");update();scheduleHide();}
@@ -158,15 +226,39 @@ final class PlaybackControls extends FrameLayout {
         String label=format.label;if(label==null||label.trim().isEmpty()){String language=format.language;label=language==null||language.equals("und")?(type==C.TRACK_TYPE_AUDIO?"Audio track ":"Subtitle track ")+number:Locale.forLanguageTag(language).getDisplayLanguage();}
         if(type==C.TRACK_TYPE_AUDIO&&format.channelCount>0)label+=" · "+(format.channelCount==1?"Mono":format.channelCount==2?"Stereo":format.channelCount+" channels");return label;
     }
-    private void showTracks(int type){
-        if(player==null)return;openPanel(type==C.TRACK_TYPE_TEXT?"Subtitles":"Audio");int count=0;
-        if(type==C.TRACK_TYPE_TEXT)option("Off",player.getTrackSelectionParameters().disabledTrackTypes.contains(type),()->player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon().setTrackTypeDisabled(type,true).build()));
-        for(Tracks.Group group:player.getCurrentTracks().getGroups())if(group.getType()==type)for(int i=0;i<group.length;i++)if(group.isTrackSupported(i)){
-            final int index=i;count++;option(trackLabel(group.getTrackFormat(i),type,count),group.isTrackSelected(i),()->player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon().setTrackTypeDisabled(type,false).setOverrideForType(new TrackSelectionOverride(group.getMediaTrackGroup(),index)).build()));
+    private void showTracks(int type) {
+        if (player == null) return;
+        boolean textTracks = type == C.TRACK_TYPE_TEXT;
+        openPanel(textTracks ? "Subtitles" : "Audio");
+        int count = 0;
+        if (textTracks) {
+            option("Off", !externalEnabled && !player.getCurrentTracks().isTypeSelected(type), () -> {
+                disableExternalSubtitles();
+                setEmbeddedSubtitlesEnabled(false);
+            });
+            if (externalSubtitle != null) option("English · downloaded", externalEnabled, this::selectExternalSubtitles);
         }
-        if(count==0){TextView empty=text(type==C.TRACK_TYPE_TEXT?"No subtitles attached to this video.":"Audio tracks are not available yet.",14,MUTED);empty.setPadding(dp(8),0,dp(8),dp(12));menu.addView(empty);}
-        if(type==C.TRACK_TYPE_TEXT&&count==0)option("Find English subtitles…",false,actions::findSubtitles);
-        option("Done",false,()->{});focusMenu();
+        for (Tracks.Group group : player.getCurrentTracks().getGroups()) {
+            if (group.getType() != type) continue;
+            for (int i = 0; i < group.length; i++) {
+                if (!group.isTrackSupported(i)) continue;
+                final int index = i;
+                option(trackLabel(group.getTrackFormat(i), type, ++count), group.isTrackSelected(i), () -> {
+                    if (textTracks) disableExternalSubtitles();
+                    player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
+                        .setTrackTypeDisabled(type, false)
+                        .setOverrideForType(new TrackSelectionOverride(group.getMediaTrackGroup(), index)).build());
+                });
+            }
+        }
+        if (textTracks && externalSubtitle == null) option("Find English subtitles…", false, actions::findSubtitles);
+        if (!textTracks && count == 0) {
+            TextView empty = text("Audio tracks are not available yet.", 14, MUTED);
+            empty.setPadding(dp(8), 0, dp(8), dp(12));
+            menu.addView(empty);
+        }
+        option("Done", false, () -> {});
+        focusMenu();
     }
     boolean back(){if(panel.getVisibility()==VISIBLE){closePanel();return true;}if(seek!=null){cancelSeek();return true;}if(visible){hide();return true;}return false;}
     boolean handleKey(KeyEvent event){

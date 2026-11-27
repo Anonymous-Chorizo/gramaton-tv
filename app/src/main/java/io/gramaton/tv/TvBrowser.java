@@ -22,8 +22,7 @@ import java.util.*;
 final class TvBrowser extends LinearLayout {
     interface Actions {
         void navigate(String url, String label); void open(JSONObject movie); void play();
-        void playSubtitles(); void subtitleSettings();
-        void search(String query); void page(String direction); void account(); void retry(); void exitToFireTv();
+        void search(String query); void page(String direction); void account(); void checkForUpdates(); void retry(); void exitToFireTv();
         void episode(int season, int episode);
     }
     private static final int BG = 0xff090e17, WHITE = 0xfff5f7fb, MUTED = 0xffaebbd0;
@@ -83,6 +82,9 @@ final class TvBrowser extends LinearLayout {
         addTab("Watchlist", () -> actions.navigate("https://gramaton.io/watchlist", "Watchlist"));
         addTab("Favorites", () -> actions.navigate("https://gramaton.io/favorites", "Favorites"));
         addTab("Account", actions::account);
+        Button updates = addTab("Updates", actions::checkForUpdates);
+        updates.setContentDescription("Check for updates");
+        updates.setOnClickListener(v -> actions.checkForUpdates());
         addView(nav, new LinearLayout.LayoutParams(-1, dp(42))); updateTabs();
 
         searchBar = new LinearLayout(activity); searchBar.setGravity(Gravity.CENTER_VERTICAL); searchBar.setPadding(0, dp(8), 0, dp(5));

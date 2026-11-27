@@ -2,11 +2,13 @@ plugins { id 'com.android.application' }
 android {
     namespace 'io.gramaton.tv'
     compileSdk 36
-    defaultConfig { applicationId 'io.gramaton.tv'; minSdk 26; targetSdk 35; versionCode 49; versionName '0.49'
+    defaultConfig { applicationId 'io.gramaton.tv'; minSdk 26; targetSdk 35; versionCode 52; versionName '0.52'
+        resValue 'string', 'update_asset_name', project.hasProperty('fireTv') ? 'Gramaton-Fire-TV.apk' : 'Gramaton-Android-TV.apk'
         manifestPlaceholders = [launcherIcon: project.hasProperty('fireTv') ? '@drawable/banner' : '@mipmap/ic_launcher'] }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
 }
 dependencies {
     implementation 'androidx.media3:media3-exoplayer:1.11.1'
     implementation 'androidx.media3:media3-ui:1.11.1'
+    implementation 'com.google.mlkit:language-id:17.0.6'
 }

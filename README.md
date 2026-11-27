@@ -1,6 +1,6 @@
 # Gramaton TV
 
-Gramaton TV is a native Fire TV and Android TV client for Gramaton. This source checkout is version 0.49. The app uses Gramaton's website for account sign-in and catalogue data and uses Media3 for native video playback.
+Gramaton TV is a native Fire TV and Android TV client for Gramaton. This source checkout is version 0.52. The app uses Gramaton's website for account sign-in and catalogue data and uses Media3 for native video playback.
 
 The sections below include historical development and device-test notes.
 
@@ -11,6 +11,20 @@ The debug-signed Fire TV APK is available as `Gramaton-Fire-TV-v0.49.apk` in thi
 For developers rebuilding: use JDK 17, Android compile SDK 36, build tools 35.0.0, and the included Gradle 8.11.1 wrapper. Build with `./gradlew :app:assembleDebug :app:lintDebug`, or open this directory in Android Studio. Add `-PfireTv` to use the wide Fire TV launcher artwork. Compile SDK 36 does not require Android 16 on the TV; minimum Android API is 26. Amazon lists the Ember Artline (2026) as Fire OS 8 / Android API 30.
 
 Sign in directly inside the app (the desktop browser session is separate). The native library opens automatically. Use Left/Right to select posters, Up/Down to change rows, and Select to open movie details. Choose **Play fullscreen** or **Resume fullscreen**. Use the Search tab and the Fire TV keyboard to search Gramaton's movie catalogue. Home, Movies, Watchlist, Favorites and page controls are native. Account opens the website when sign-in or account access is needed. Back returns to the page and saves position. Backgrounding the app releases playback and saves position; select Play on return. Resume positions are local to this app installation, keyed by movie path. Different Gramaton accounts on the same installation currently share resume positions.
+
+## Updates from GitHub Releases
+
+Select **Updates** in the top menu to check for a new version. Choose **Download** when offered, then confirm the install in the TV's package installer. Fire OS may ask you to allow Gramaton to install updates from this source. An in-place update retains the local Watchlist and resume history.
+
+### Publishing an update
+
+1. Increase both `versionCode` and `versionName` in `app/build.gradle`. Build the release APK using `./gradlew -PfireTv :app:assembleRelease` for Fire TV or omit `-PfireTv` for Android TV.
+2. Sign the APK with the maintained release certificate. To preserve upgrades from the original Gramaton debug-signed build, use the established signing lineage with `--rotation-min-sdk-version 28`. The maintainer keeps the signing keys and passwords outside Git. Android 26 and 27 use the original signer in the lineage-compatible APK.
+3. Publish a non-prerelease GitHub Release with a tag matching the app version, such as `v0.50`. Attach the signed build as `Gramaton-Fire-TV.apk` or `Gramaton-Android-TV.apk` as appropriate. The updater checks the GitHub asset digest, package, version, and signing certificate before handing the APK to the installer.
+
+## Subtitles during playback
+
+Open **CC** and choose **Find English subtitles**. Gramaton searches in the background and checks the downloaded dialogue language and cue timing on the device before displaying a matching track without restarting the video. Matches depend on provider coverage and may vary by cut. Searches send title metadata or IMDb IDs and episode numbers to the public subtitle and metadata services.
 
 ## Implemented in source, awaiting device verification
 
