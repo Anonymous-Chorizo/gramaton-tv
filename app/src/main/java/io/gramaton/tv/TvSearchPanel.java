@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.res.ColorStateList;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
+import android.net.Uri;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextUtils;
@@ -15,6 +16,7 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -24,6 +26,7 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Consumer;
@@ -38,6 +41,7 @@ final class TvSearchPanel {
     private static final int TEXT = 0xfff5f7fb;
     private static final int MUTED = 0xffaebbd0;
     private static final int DARK = 0xff090e17;
+    private static final int DARK_MUTED = 0xff475569;
     private static final int ACCENT = 0xffd5e7ff;
 
     final LinearLayout header;
@@ -47,29 +51,33 @@ final class TvSearchPanel {
     private final LinearLayout keyboard, suggestions, suggestionColumn, keypadColumn;
     private final TvPhoneSearch phone;
     private final CatalogueSuggestions catalogueSuggestions;
+    private final TvImageLoader artwork;
     private final ProgressBar more;
     private final TextView hint;
     private final Button space, clear, search;
     private final InputMethodManager inputMethod;
     private final Runnable openEditor, focusMenu, focusResults;
+    private final Consumer<JSONObject> openTitle;
     private final Consumer<String> submit;
     private final android.text.method.KeyListener textInput;
     private final List<Button> keys = new ArrayList<>();
-    private final List<Button> choices = new ArrayList<>();
-    private final java.util.LinkedHashMap<String, String> knownTitles = new java.util.LinkedHashMap<>();
+    private final List<View> choices = new ArrayList<>();
+    private final LinkedHashMap<String, JSONObject> knownTitles = new LinkedHashMap<>();
     private Mode mode = Mode.HIDDEN;
     private boolean numbers, foreground, editorActive, suggestionsUnavailable;
     private String suggestionTerm;
     private Button lastKey;
 
-    TvSearchPanel(Activity activity, CatalogueSuggestions catalogueSuggestions,
+    TvSearchPanel(Activity activity, CatalogueSuggestions catalogueSuggestions, TvImageLoader artwork,
                   Runnable openEditor, Runnable focusMenu, Runnable focusResults,
-                  Consumer<String> submit) {
+                  Consumer<JSONObject> openTitle, Consumer<String> submit) {
         this.activity = activity;
         this.catalogueSuggestions = catalogueSuggestions;
+        this.artwork = artwork;
         this.openEditor = openEditor;
         this.focusMenu = focusMenu;
         this.focusResults = focusResults;
+        this.openTitle = openTitle;
         this.submit = submit;
         inputMethod = activity.getSystemService(InputMethodManager.class);
 
@@ -219,9 +227,9 @@ final class TvSearchPanel {
         boolean changed = false;
         for (int i = 0; i < titles.length(); i++) {
             JSONObject item = titles.optJSONObject(i);
-            if (item == null) continue;
-            String title = item.optString("title").trim();
-            if (!title.isEmpty() && knownTitles.putIfAbsent(title.toLowerCase(Locale.ROOT), title) == null) changed = true;
+            if (item == null || item.optString("title").trim().isEmpty()) continue;
+            Uri page = Uri.parse(item.optString("url"));
+            if (MainActivity.isMovie(page) && knownTitles.putIfAbsent(page.getPath(), item) == null) changed = true;
         }
         while (knownTitles.size() > 2000) knownTitles.remove(knownTitles.keySet().iterator().next());
         if (changed && editorActive && suggestionsUnavailable && !suggestions.hasFocus()) showLocalSuggestions(suggestionTerm);
@@ -257,21 +265,22 @@ final class TvSearchPanel {
     }
 
     private void showLocalSuggestions(String term) {
-        List<String> titles = new ArrayList<>();
-        for (var title : knownTitles.entrySet()) {
-            if (title.getKey().startsWith(term)) titles.add(title.getValue());
+        List<JSONObject> titles = new ArrayList<>();
+        for (JSONObject item : knownTitles.values()) {
+            if (item.optString("title").trim().toLowerCase(Locale.ROOT).startsWith(term)) titles.add(item);
             if (titles.size() == MAX_SUGGESTIONS) break;
         }
         if (titles.size() < MAX_SUGGESTIONS) {
-            for (var title : knownTitles.entrySet()) {
-                if (!title.getKey().startsWith(term) && title.getKey().contains(term)) titles.add(title.getValue());
+            for (JSONObject item : knownTitles.values()) {
+                String name = item.optString("title").trim().toLowerCase(Locale.ROOT);
+                if (!name.startsWith(term) && name.contains(term)) titles.add(item);
                 if (titles.size() == MAX_SUGGESTIONS) break;
             }
         }
         showSuggestions(titles, "Couldn’t load suggestions");
     }
 
-    private void showSuggestions(List<String> titles, String emptyMessage) {
+    private void showSuggestions(List<JSONObject> titles, String emptyMessage) {
         // Move focus before removing a suggestion that may still be selected by a remote.
         if (suggestions.hasFocus()) focusKeyboard();
         choices.clear();
@@ -281,10 +290,45 @@ final class TvSearchPanel {
         hint.setText(emptyMessage);
     }
 
-    private void addSuggestion(String title) {
-        Button choice = control(title, false);
-        choice.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
-        choice.setPaddingRelative(dp(12), 0, dp(10), 0);
+    private void addSuggestion(JSONObject item) {
+        String name = item.optString("title");
+        String releaseYear = item.optString("year");
+        LinearLayout choice = new LinearLayout(activity);
+        choice.setGravity(Gravity.CENTER_VERTICAL);
+        choice.setPaddingRelative(dp(7), 0, dp(10), 0);
+        choice.setFocusableInTouchMode(true);
+        choice.setBackground(background(BACKGROUND, TEXT, TEXT));
+        choice.setContentDescription(releaseYear.isEmpty() ? name : name + ", " + releaseYear);
+
+        ImageView thumbnail = new ImageView(activity);
+        thumbnail.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        thumbnail.setBackground(rounded(DARK_MUTED, 0));
+        thumbnail.setClipToOutline(true);
+        thumbnail.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        choice.addView(thumbnail, new LinearLayout.LayoutParams(dp(24), dp(36)));
+        artwork.load(item.optString("image"), thumbnail, false);
+
+        LinearLayout copy = column();
+        copy.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        LinearLayout.LayoutParams copySize = new LinearLayout.LayoutParams(0, -2, 1);
+        copySize.setMarginStart(dp(10));
+        choice.addView(copy, copySize);
+        TextView title = label(name, 15, TEXT);
+        title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        title.setIncludeFontPadding(false);
+        copy.addView(title);
+        TextView year = label(releaseYear, 12, MUTED);
+        year.setIncludeFontPadding(false);
+        year.setVisibility(releaseYear.isEmpty() ? View.GONE : View.VISIBLE);
+        LinearLayout.LayoutParams yearSize = new LinearLayout.LayoutParams(-1, -2);
+        yearSize.topMargin = dp(2);
+        copy.addView(year, yearSize);
+        choice.setOnFocusChangeListener((view, focused) -> {
+            title.setTextColor(focused ? DARK : TEXT);
+            year.setTextColor(focused ? DARK_MUTED : MUTED);
+        });
+
         int row = choices.size();
         choice.setOnKeyListener((v, key, event) -> {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
@@ -301,13 +345,12 @@ final class TvSearchPanel {
             }
         });
         choice.setOnClickListener(v -> {
-            search.requestFocus();
-            query.setText(title);
-            query.setSelection(query.length());
+            hideInputMethod();
+            openTitle.accept(item);
         });
         choices.add(choice);
-        LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(-1, dp(38));
-        size.bottomMargin = dp(5);
+        LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(-1, dp(46));
+        size.bottomMargin = dp(4);
         suggestions.addView(choice, size);
     }
 

@@ -103,8 +103,8 @@ final class TvBrowser extends FrameLayout {
         drawer.addDestination("Account", R.drawable.nav_circle_user_round, actions::account);
         drawer.select("Home");
 
-        search = new TvSearchPanel(activity, catalogueSuggestions, () -> showSearchEditor(true), drawer::focusSelected,
-            this::focusSearchResults, query -> {
+        search = new TvSearchPanel(activity, catalogueSuggestions, artwork, () -> showSearchEditor(true), drawer::focusSelected,
+            this::focusSearchResults, actions::open, query -> {
                 focusFirstSearchResult = true;
                 actions.search(query);
             });
@@ -335,7 +335,7 @@ final class TvBrowser extends FrameLayout {
         message.setVisibility(GONE); refreshSpinner.setVisibility(INVISIBLE); loading = true; loadingStage.setVisibility(GONE);
         loadingTitle.setText(label.startsWith("Search: ") ? "Searching…" : "Loading " + label + "…");
         spinner.setVisibility(VISIBLE); retry.setVisibility(GONE);
-        loadingPanel.setVisibility(search.isEditing() ? GONE : VISIBLE); loadingPanel.bringToFront();
+        loadingPanel.setVisibility(detailShowing || !search.isEditing() ? VISIBLE : GONE); loadingPanel.bringToFront();
     }
     void refreshing(String label) { pageLabel = label; selectDestination(label); refreshSpinner.setVisibility(VISIBLE); }
     void finishLoading() { loading = false; loadingPanel.setVisibility(GONE); refreshSpinner.setVisibility(INVISIBLE); }
@@ -808,7 +808,28 @@ final class TvBrowser extends FrameLayout {
         }).setNegativeButton("Cancel", null).show();
     }
     boolean isDetailShowing() { return detailShowing; }
-    void hideDetails() { boolean restore = detailShowing && !drawer.hasFocus(); finishLoading(); detailShowing = false; if (detailArt != null) { content.removeView(detailArt); detailArt = null; detailPoster = null; detailBackdrop = null; } drawer.setVisibility(VISIBLE); setBrowseInsets(true); details.setVisibility(GONE); search.updateVisibility(false); updateGridToolbarVisibility(); showCatalogueViews(true); queueArtwork(); if (restore) focusRememberedCard(); }
+    void hideDetails() {
+        boolean restore = detailShowing && !drawer.hasFocus();
+        finishLoading();
+        detailShowing = false;
+        if (detailArt != null) {
+            content.removeView(detailArt);
+            detailArt = null;
+            detailPoster = null;
+            detailBackdrop = null;
+        }
+        drawer.setVisibility(VISIBLE);
+        setBrowseInsets(true);
+        details.setVisibility(GONE);
+        search.updateVisibility(false);
+        updateGridToolbarVisibility();
+        showCatalogueViews(true);
+        queueArtwork();
+        if (restore) {
+            if (search.isEditing()) search.focusKeyboard();
+            else focusRememberedCard();
+        }
+    }
     void restoreFocus() { if (detailShowing) { View play = details.findViewWithTag("play"); if (play != null) play.requestFocus(); } else focusRememberedCard(); }
     private boolean focusRememberedCard() {
         if (gridMode) return grid.focusSelected();

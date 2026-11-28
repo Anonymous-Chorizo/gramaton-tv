@@ -15,7 +15,7 @@ import java.io.InputStreamReader;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -26,7 +26,8 @@ import javax.net.ssl.HttpsURLConnection;
 
 /** Runs the catalogue's typeahead request independently of the results WebView. */
 final class CatalogueSuggestions {
-    private static final String ENDPOINT = "https://gramaton.io/search/auto";
+    private static final String ORIGIN = "https://gramaton.io";
+    private static final String ENDPOINT = ORIGIN + "/search/auto";
     private static final int DEBOUNCE_MS = 300;
     private static final int MAX_RESPONSE_CHARS = 32768;
 
@@ -38,7 +39,7 @@ final class CatalogueSuggestions {
 
     CatalogueSuggestions(String userAgent) { this.userAgent = userAgent; }
 
-    void lookup(String query, Consumer<List<String>> complete) {
+    void lookup(String query, Consumer<List<JSONObject>> complete) {
         cancel();
         int request = generation;
         main.postDelayed(() -> {
@@ -47,7 +48,7 @@ final class CatalogueSuggestions {
             // Use the existing signed-in session only for this request to Gramaton.
             String cookie = CookieManager.getInstance().getCookie(url);
             activeRequest = worker.submit(() -> {
-                List<String> titles = fetch(url, cookie);
+                List<JSONObject> titles = fetch(url, cookie);
                 main.post(() -> {
                     if (request != generation) return;
                     activeRequest = null;
@@ -58,7 +59,7 @@ final class CatalogueSuggestions {
     }
 
     // An empty list is a successful lookup with no matches. Null allows the local fallback.
-    private List<String> fetch(String url, String cookie) {
+    private List<JSONObject> fetch(String url, String cookie) {
         HttpsURLConnection connection = null;
         try {
             connection = (HttpsURLConnection) new URL(url).openConnection();
@@ -80,14 +81,23 @@ final class CatalogueSuggestions {
                 }
             }
             JSONArray matches = new JSONArray(json.toString());
-            LinkedHashSet<String> titles = new LinkedHashSet<>();
+            LinkedHashMap<String, JSONObject> titles = new LinkedHashMap<>();
             for (int i = 0; i < matches.length(); i++) {
                 JSONObject match = matches.optJSONObject(i);
                 if (match == null || match.isNull("title")) continue;
                 String title = Html.fromHtml(match.optString("title"), Html.FROM_HTML_MODE_LEGACY).toString().trim();
-                if (!title.isEmpty()) titles.add(title);
+                if (title.isEmpty()) continue;
+                String link = match.optString("link").trim();
+                Uri page = Uri.parse(link.startsWith("/") && !link.startsWith("//") ? ORIGIN + link : link);
+                if (!MainActivity.isMovie(page)) continue;
+                String year = match.isNull("year") ? "" : match.optString("year").trim();
+                String poster = match.isNull("poster") ? "" : match.optString("poster").trim();
+                JSONObject card = new JSONObject()
+                    .put("url", page.toString()).put("title", title).put("image", poster)
+                    .put("year", year).put("meta", year).put("series", page.getPath().startsWith("/series/"));
+                titles.putIfAbsent(page.getPath(), card);
             }
-            return new ArrayList<>(titles);
+            return new ArrayList<>(titles.values());
         } catch (IOException | JSONException ignored) {
             return null;
         } finally {
