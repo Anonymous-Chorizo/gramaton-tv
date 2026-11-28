@@ -23,10 +23,20 @@
   const imdb = imdbLinks.map(value => typeof value === 'string' &&
       value.match(/^https?:\/\/(?:www\.)?imdb\.com\/title\/(tt[0-9]+)(?:[/?#]|$)/i))
     .find(Boolean);
-  const year = (String(media.datePublished || labeled('Released|Release Date|Year')).match(/\b(?:18|19|20)\d{2}\b/) || [])[0];
-  const genre = [].concat(media.genre || []).filter(Boolean).join(', ') || labeled('Genres?');
+  const movieInfo = document.querySelector('.movie-info');
+  const metadata = selector => movieInfo?.querySelector('.movie-data ' + selector)?.textContent.trim() || '';
+  const rating = metadata('.imdb-rating');
+  const runtime = metadata('.movie-time');
+  const year = (String(metadata('.movie-date') || media.datePublished || labeled('Released|Release Date|Year')).match(/\b(?:18|19|20)\d{2}\b/) || [])[0];
+  const genre = metadata('.movie-genre') || [].concat(media.genre || []).filter(Boolean).join(', ') || labeled('Genres?');
   const cast = [].concat(media.actor || []).map(actor => typeof actor === 'string' ? actor : actor && actor.name)
     .filter(Boolean).join(', ') || labeled('Starring|Cast|Actors?');
+  const trailer = Array.from(document.querySelectorAll('.extra a.strip[href]')).find(link =>
+    /^watch trailer$/i.test(link.textContent.trim()) && link.protocol === 'https:' &&
+    link.hostname === 'www.youtube.com' && link.pathname === '/watch' &&
+    /^[\w-]{11}$/.test(new URLSearchParams(link.search).get('v') || ''));
+  const favoriteId = document.querySelector('.favorites-add')?.getAttribute('onclick')
+    ?.match(/\baddFavorite\(['"](\d+)['"]\)/)?.[1];
   const container = document.getElementById('tv-episodes-list-container');
   const episodes = [];
   let season = 0, episode = 0;
@@ -44,5 +54,5 @@
   const art = Array.from(document.images).filter(image => !image.alt.trim() && image.naturalWidth > 200 && /^https:/.test(image.currentSrc));
   const backdrop = art.find(image => image.naturalWidth > image.naturalHeight);
   const poster = art.find(image => image.naturalWidth < image.naturalHeight);
-  return JSON.stringify({backdrop:backdrop && backdrop.currentSrc,poster:poster && poster.currentSrc,ready:!!document.querySelector('a[href*="/player/videojs5.html"],a[href*="/player/native.html"]'),description,year,imdb:imdb && imdb[1],genre,cast,episodes,season,episode});
+  return JSON.stringify({backdrop:backdrop && backdrop.currentSrc,poster:poster && poster.currentSrc,ready:!!document.querySelector('a[href*="/player/videojs5.html"],a[href*="/player/native.html"]'),description,rating,runtime,year,imdb:imdb && imdb[1],genre,cast,trailer:trailer?.href,favoriteId,episodes,season,episode});
 })(__TITLE__)

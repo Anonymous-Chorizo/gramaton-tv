@@ -1,6 +1,7 @@
 package io.gramaton.tv;
 
 import android.app.Activity;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.Typeface;
@@ -15,6 +16,7 @@ import android.widget.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.util.*;
+import java.util.function.Consumer;
 
 /** Native TV presentation and explicit remote navigation. Website data stays outside this view. */
 final class TvBrowser extends FrameLayout {
@@ -24,8 +26,10 @@ final class TvBrowser extends FrameLayout {
         boolean loadMore(boolean retry);
         void episode(int season, int episode);
         void filter(String parameter, String value);
+        void trailer(String url);
+        void favorite(String id, Boolean selected, Consumer<Boolean> result);
     }
-    private static final int BG = 0xff090e17, WHITE = 0xfff5f7fb, MUTED = 0xffaebbd0;
+    private static final int BG = TvColors.BLACK, WHITE = TvColors.WHITE, MUTED = TvColors.MUTED;
     private final Activity activity;
     private final Actions actions;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -78,7 +82,7 @@ final class TvBrowser extends FrameLayout {
         addView(browserColumn, new FrameLayout.LayoutParams(-1, -1));
 
         refreshSpinner = new ProgressBar(activity);
-        refreshSpinner.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(0xff70b8ff));
+        refreshSpinner.setIndeterminateTintList(ColorStateList.valueOf(WHITE));
         refreshSpinner.setVisibility(INVISIBLE);
         FrameLayout.LayoutParams refreshSize = new FrameLayout.LayoutParams(dp(16), dp(16), Gravity.TOP | Gravity.RIGHT);
         refreshSize.setMargins(0, dp(24), dp(28), 0);
@@ -86,7 +90,7 @@ final class TvBrowser extends FrameLayout {
 
         View scrim = new View(activity);
         scrim.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-            new int[]{0xf5090e17, 0xb0090e17, Color.TRANSPARENT}));
+            new int[]{0xf5000000, 0xb0000000, Color.TRANSPARENT}));
         scrim.setVisibility(GONE);
         addView(scrim, new FrameLayout.LayoutParams(-1, -1));
         drawer = new TvNavigationDrawer(activity, scrim, this::focusBrowser);
@@ -112,13 +116,15 @@ final class TvBrowser extends FrameLayout {
 
         gridToolbar = new LinearLayout(activity);
         gridToolbar.setGravity(Gravity.CENTER_VERTICAL);
-        gridToolbar.setPadding(dp(4), 0, 0, dp(10));
+        gridToolbar.setClipChildren(false);
+        gridToolbar.setClipToPadding(false);
+        gridToolbar.setPadding(dp(4), dp(2), dp(10), dp(2));
         gridTitle = text("", 25, WHITE);
         gridTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         gridToolbar.addView(gridTitle, new LinearLayout.LayoutParams(0, -2, 1));
         moreSpinner = new ProgressBar(activity);
         moreSpinner.setContentDescription("Loading more titles");
-        moreSpinner.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(0xff70b8ff));
+        moreSpinner.setIndeterminateTintList(ColorStateList.valueOf(WHITE));
         moreSpinner.setVisibility(INVISIBLE);
         gridToolbar.addView(moreSpinner, new LinearLayout.LayoutParams(dp(18), dp(18)));
         sortFilter = button("Sort");
@@ -137,12 +143,12 @@ final class TvBrowser extends FrameLayout {
         heroImage = new ImageView(activity); heroImage.setScaleType(ImageView.ScaleType.CENTER_CROP); heroImage.setAlpha(.78f);
         int artWidth = Math.round(getResources().getDisplayMetrics().widthPixels / getResources().getDisplayMetrics().density * .59f);
         hero.addView(heroImage, new FrameLayout.LayoutParams(artWidth, -1, Gravity.RIGHT));
-        View shade = new View(activity); shade.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{BG, BG, 0xc0090e17, 0x15090e17})); hero.addView(shade, new FrameLayout.LayoutParams(-1, -1));
-        View bottom = new View(activity); bottom.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{0x00090e17, 0x00090e17, BG})); hero.addView(bottom, new FrameLayout.LayoutParams(-1, -1));
+        View shade = new View(activity); shade.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{BG, BG, 0xc0000000, 0x15000000})); hero.addView(shade, new FrameLayout.LayoutParams(-1, -1));
+        View bottom = new View(activity); bottom.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{Color.TRANSPARENT, Color.TRANSPARENT, BG})); hero.addView(bottom, new FrameLayout.LayoutParams(-1, -1));
         LinearLayout copy = new LinearLayout(activity); copy.setOrientation(LinearLayout.VERTICAL); copy.setGravity(Gravity.CENTER_VERTICAL); copy.setPadding(dp(3), dp(5), dp(15), dp(5));
-        kicker = text("YOUR NEXT GREAT WATCH", 10, 0xff76baff); kicker.setLetterSpacing(.14f); copy.addView(kicker);
+        kicker = text("YOUR NEXT GREAT WATCH", 10, MUTED); kicker.setLetterSpacing(.14f); copy.addView(kicker);
         title = text("Welcome to Gramaton", 28, WHITE); title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); title.setMaxLines(2); title.setEllipsize(TextUtils.TruncateAt.END); copy.addView(title);
-        subtitle = text("Movies and TV, ready for your remote", 13, 0xffc0cbdc); subtitle.setMaxLines(1); subtitle.setEllipsize(TextUtils.TruncateAt.END); subtitle.setPadding(0, dp(4), 0, dp(3)); copy.addView(subtitle);
+        subtitle = text("Movies and TV, ready for your remote", 13, TvColors.SECONDARY); subtitle.setMaxLines(1); subtitle.setEllipsize(TextUtils.TruncateAt.END); subtitle.setPadding(0, dp(4), 0, dp(3)); copy.addView(subtitle);
         description = text("", 14, MUTED); description.setMaxLines(2); description.setEllipsize(TextUtils.TruncateAt.END); copy.addView(description);
         hero.addView(copy, new FrameLayout.LayoutParams(Math.round(artWidth * 1.02f), -1, Gravity.LEFT));
         message = text("", 12, MUTED); message.setPadding(0, 0, 0, dp(6)); message.setVisibility(GONE); browserColumn.addView(message);
@@ -173,9 +179,14 @@ final class TvBrowser extends FrameLayout {
         FrameLayout.LayoutParams retryPageSize = new FrameLayout.LayoutParams(-2, dp(40), Gravity.BOTTOM | Gravity.RIGHT);
         retryPageSize.setMargins(0, 0, dp(30), dp(16));
         content.addView(retryPage, retryPageSize);
-        details = new LinearLayout(activity); details.setOrientation(LinearLayout.VERTICAL); details.setVisibility(GONE); content.addView(details, new FrameLayout.LayoutParams(-1, -1));
+        details = new LinearLayout(activity);
+        details.setOrientation(LinearLayout.VERTICAL);
+        details.setClipChildren(false);
+        details.setClipToPadding(false);
+        details.setVisibility(GONE);
+        content.addView(details, new FrameLayout.LayoutParams(-1, -1));
         loadingPanel = new LinearLayout(activity); loadingPanel.setOrientation(LinearLayout.VERTICAL); loadingPanel.setGravity(Gravity.CENTER); loadingPanel.setBackgroundColor(BG); loadingPanel.setVisibility(GONE);
-        spinner = new ProgressBar(activity); spinner.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(0xff329aff)); loadingPanel.addView(spinner, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        spinner = new ProgressBar(activity); spinner.setIndeterminateTintList(ColorStateList.valueOf(WHITE)); loadingPanel.addView(spinner, new LinearLayout.LayoutParams(dp(48), dp(48)));
         loadingTitle = text("Loading Gramaton…", 23, WHITE); loadingTitle.setGravity(Gravity.CENTER); loadingTitle.setPadding(0, dp(15), 0, dp(5)); loadingPanel.addView(loadingTitle);
         loadingStage = text("Connecting…", 15, MUTED); loadingStage.setGravity(Gravity.CENTER); loadingStage.setVisibility(GONE); loadingPanel.addView(loadingStage);
         retry = button("Try again"); retry.setOnClickListener(v -> actions.retry()); retry.setVisibility(GONE); loadingPanel.addView(retry, new LinearLayout.LayoutParams(-2, dp(42)));
@@ -199,8 +210,8 @@ final class TvBrowser extends FrameLayout {
     }
     private Button button(String label) {
         Button b = new Button(activity); b.setText(label); b.setAllCaps(false); b.setTextSize(14); b.setTextColor(WHITE); b.setMinWidth(0); b.setMinimumWidth(0); b.setMinimumHeight(0);
-        b.setPadding(dp(16), dp(7), dp(16), dp(7)); b.setBackground(round(0xff1b2638, 0, 20)); b.setFocusableInTouchMode(true);
-        b.setOnFocusChangeListener((v, focus) -> { b.setTextColor(focus ? BG : WHITE); b.setBackground(round(focus ? WHITE : 0xff1b2638, 0, 20)); b.animate().scaleX(focus ? 1.035f : 1).scaleY(focus ? 1.035f : 1).setDuration(130).start(); });
+        b.setPadding(dp(16), dp(7), dp(16), dp(7)); b.setBackground(round(TvColors.SURFACE, 0, 20)); b.setFocusableInTouchMode(true);
+        b.setOnFocusChangeListener((v, focus) -> { b.setTextColor(focus ? BG : WHITE); b.setBackground(round(focus ? WHITE : TvColors.SURFACE, 0, 20)); b.animate().scaleX(focus ? 1.035f : 1).scaleY(focus ? 1.035f : 1).setDuration(130).start(); });
         return b;
     }
     private void focusBrowser() {
@@ -305,7 +316,7 @@ final class TvBrowser extends FrameLayout {
     private void startMore(boolean retry) {
         if (!grid.isShown() || !moreAvailable || moreLoading || loading) return;
         if (!actions.loadMore(retry)) return;
-        if (retryPage.hasFocus()) grid.focusSelected();
+        if (retryPage.hasFocus() && !grid.focusSelected() && search.isOpen()) search.focusField();
         moreFailed = false;
         moreLoading = true;
         updateMoreStatus();
@@ -314,7 +325,11 @@ final class TvBrowser extends FrameLayout {
         moreLoading = false;
         updateMoreStatus();
     }
-    void gridDocumentReady() { if (gridMode) grid.checkPagingSoon(); }
+    void gridDocumentReady() {
+        if (!gridMode) return;
+        if (moreAvailable && hasSearchFilters(pageLabel) && !grid.hasPosters()) requestMore();
+        else grid.checkPagingSoon();
+    }
     void failGridPage() {
         moreLoading = false;
         moreFailed = true;
@@ -322,12 +337,21 @@ final class TvBrowser extends FrameLayout {
     }
     void appendGridPage(JSONArray items, boolean hasNext) {
         search.indexTitles(items);
-        int added = grid.append(items);
-        moreAvailable = hasNext && added > 0;
+        boolean filtered = hasSearchFilters(pageLabel);
+        int added = grid.append(filtered ? search.filterResults(items) : items);
+        moreAvailable = hasNext && (filtered || added > 0);
         moreLoading = false;
         moreFailed = false;
         updateMoreStatus();
-        if (moreAvailable) grid.checkPagingSoon();
+        if (moreAvailable) grid.post(this::gridDocumentReady);
+        else if (filtered && !grid.hasPosters()) showNoSearchMatches();
+    }
+
+    private boolean hasSearchFilters(String label) { return label.startsWith("Search: ") && search.hasFilters(); }
+
+    private void showNoSearchMatches() {
+        message.setText("No titles match these filters.");
+        message.setVisibility(VISIBLE);
     }
     void loading(String label) {
         hero.setVisibility(GONE);
@@ -367,6 +391,7 @@ final class TvBrowser extends FrameLayout {
 
     private void focusSearchResults() {
         if (loadingPanel.isShown() && retry.isShown()) retry.requestFocus();
+        else if (!grid.hasPosters() && retryPage.isShown()) retryPage.requestFocus();
         else if (!grid.focusSelected()) search.focusField();
     }
 
@@ -415,10 +440,12 @@ final class TvBrowser extends FrameLayout {
         return -1;
     }
 
-    private Button watchlistButton(JSONObject movie) {
-        Button save = button("");
-        Runnable refresh = () -> save.setText(savedIndex(deviceWatchlist(), movie) >= 0
-            ? "Remove from TV Watchlist" : "+ Watchlist");
+    private void bindWatchlist(Button save, JSONObject movie) {
+        Runnable refresh = () -> {
+            boolean saved = savedIndex(deviceWatchlist(), movie) >= 0;
+            save.setActivated(saved);
+            save.setContentDescription(saved ? "Remove from Watchlist" : "Save to Watchlist");
+        };
         refresh.run();
         save.setOnClickListener(v -> {
             JSONArray titles = deviceWatchlist();
@@ -427,14 +454,15 @@ final class TvBrowser extends FrameLayout {
             else titles.put(movie);
             activity.getSharedPreferences("device_watchlist", 0).edit().putString("titles", titles.toString()).apply();
             refresh.run();
-            save.announceForAccessibility(index >= 0 ? "Title removed" : "Title saved");
+            Toast.makeText(activity, index >= 0 ? "Removed from Watchlist" : "Added to Watchlist", Toast.LENGTH_SHORT).show();
         });
-        return save;
     }
 
     void render(JSONObject data, String label) throws Exception {
         JSONArray items = data.getJSONArray("cards");
         search.indexTitles(items);
+        boolean filteredSearch = hasSearchFilters(label);
+        if (filteredSearch) items = search.filterResults(items);
         if (label.equals("Home") || label.equals("Watchlist")) {
             JSONArray merged = new JSONArray();
             JSONArray saved = deviceWatchlist();
@@ -500,9 +528,12 @@ final class TvBrowser extends FrameLayout {
             showCatalogueViews(!detailShowing);
             if (grid.hasPosters()) {
                 if (restoreCardFocus && !detailShowing && !search.isEditing()) grid.focusSelected();
-            } else if (!search.isEditing()) {
-                message.setText(filters == null ? "No titles found." : "No titles match these filters.");
-                message.setVisibility(VISIBLE);
+            } else if (!search.isEditing() && !(filteredSearch && moreAvailable)) {
+                if (filteredSearch) showNoSearchMatches();
+                else {
+                    message.setText(filters == null ? "No titles found." : "No titles match these filters.");
+                    message.setVisibility(VISIBLE);
+                }
                 if (search.isOpen()) search.focusField();
                 else if (!gridToolbar.hasFocus() && !sortFilter.requestFocus()) drawer.focusSelected();
             }
@@ -578,7 +609,7 @@ final class TvBrowser extends FrameLayout {
                 TextView tile = text("View all", 17, WHITE);
                 tile.setGravity(Gravity.CENTER);
                 tile.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-                tile.setBackground(round(0xff1c293b, 0, 7));
+                tile.setBackground(round(TvColors.SURFACE, 0, 7));
                 tile.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
                 card.addView(tile, new LinearLayout.LayoutParams(-1, artworkHeight));
                 card.setContentDescription("View all " + label);
@@ -625,13 +656,13 @@ final class TvBrowser extends FrameLayout {
     private void addPoster(LinearLayout card, JSONObject movie, int artworkHeight, boolean featured) {
         ImageView poster = new ImageView(activity);
         poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        poster.setBackground(round(0xff1c293b, 0, 7));
+        poster.setBackground(round(TvColors.SURFACE, 0, 7));
         poster.setClipToOutline(true);
         poster.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
         card.setTag(R.id.poster_image, poster);
         if (featured) {
             FrameLayout cover = new FrameLayout(activity);
-            cover.setBackground(round(0xff1c293b, 0, 7));
+            cover.setBackground(round(TvColors.SURFACE, 0, 7));
             cover.setClipToOutline(true);
             cover.addView(poster, new FrameLayout.LayoutParams(-1, -1));
             TextView lettering = text(movie.optString("title"), 17, WHITE);
@@ -689,17 +720,45 @@ final class TvBrowser extends FrameLayout {
         if (artworkQueued) return; artworkQueued = true;
         main.postDelayed(() -> { artworkQueued = false; Rect visible = new Rect(); for (Poster poster : posters) if (poster.view.isShown() && poster.view.getGlobalVisibleRect(visible) && visible.width() > 12 && visible.height() > 12) artwork.load(poster.url, poster.view, false); }, 80);
     }
-    private void addDetailButton(LinearLayout controls, Button button) {
-        button.setPadding(dp(24), dp(8), dp(24), dp(8));
+    private Button addDetailButton(LinearLayout controls, String label, int icon) {
+        boolean iconOnly = icon != 0;
+        Button button = button(iconOnly ? "" : label);
+        if (iconOnly) {
+            button.setContentDescription(label);
+            button.setCompoundDrawablesWithIntrinsicBounds(icon, 0, 0, 0);
+            button.setCompoundDrawableTintList(ColorStateList.valueOf(WHITE));
+        }
+        int horizontalPadding = dp(iconOnly ? 10 : 24);
+        button.setPadding(horizontalPadding, dp(8), horizontalPadding, dp(8));
         button.setGravity(Gravity.CENTER);
         button.setOnFocusChangeListener((view, focused) -> {
-            button.setTextColor(focused ? BG : WHITE);
-            button.setBackground(round(focused ? WHITE : 0xff1b2638, 0, 22));
+            int foreground = focused ? BG : WHITE;
+            button.setTextColor(foreground);
+            if (iconOnly) button.setCompoundDrawableTintList(ColorStateList.valueOf(foreground));
+            button.setBackground(round(focused ? WHITE : TvColors.SURFACE, 0, 22));
         });
-        button.setBackground(round(0xff1b2638, 0, 22));
-        LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(-2, dp(44));
+        button.setBackground(round(TvColors.SURFACE, 0, 22));
+        LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(iconOnly ? dp(44) : -2, dp(44));
         if (controls.getChildCount() > 0) size.leftMargin = dp(12);
         controls.addView(button, size);
+        return button;
+    }
+
+    private void requestFavorite(Button favorite, String id, Boolean selected) {
+        favorite.setClickable(false);
+        actions.favorite(id, selected, saved -> {
+            if (!favorite.isAttachedToWindow()) return;
+            if (saved == null) {
+                Toast.makeText(activity, selected == null ? "Could not load Favorites" : "Could not update Favorites",
+                    Toast.LENGTH_SHORT).show();
+                favorite.setOnClickListener(v -> requestFavorite(favorite, id, null));
+                return;
+            }
+            favorite.setActivated(saved);
+            favorite.setContentDescription(saved ? "Remove from Favorites" : "Add to Favorites");
+            favorite.setOnClickListener(v -> requestFavorite(favorite, id, !favorite.isActivated()));
+            if (selected != null) Toast.makeText(activity, saved ? "Added to Favorites" : "Removed from Favorites", Toast.LENGTH_SHORT).show();
+        });
     }
 
     void showDetails(JSONObject movie) {
@@ -721,13 +780,14 @@ final class TvBrowser extends FrameLayout {
         detailArt.setTag(movie);
         View scrim = new View(activity);
         scrim.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-            new int[]{0xf0090e17, 0x85090e17, 0x00090e17}));
+            new int[]{0xf0000000, 0x85000000, Color.TRANSPARENT}));
         detailArt.addView(scrim, new FrameLayout.LayoutParams(-1, -1));
         details.setGravity(Gravity.BOTTOM);
         details.setPadding(dp(36), dp(20), dp(36), dp(24));
         LinearLayout info = new LinearLayout(activity);
         info.setOrientation(LinearLayout.VERTICAL);
-        int copyWidth = getResources().getDisplayMetrics().widthPixels / 3;
+        info.setClipChildren(false);
+        int copyWidth = Math.round(getResources().getDisplayMetrics().widthPixels * 0.4f);
         TextView detailTitle = text(movie.optString("title"), 30, WHITE);
         detailTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         detailTitle.setMaxLines(2);
@@ -736,7 +796,7 @@ final class TvBrowser extends FrameLayout {
         titleSize.bottomMargin = dp(8);
         info.addView(detailTitle, titleSize);
 
-        TextView metadata = text("", 14, WHITE);
+        TextView metadata = text("", 14, MUTED);
         metadata.setTag("detail-metadata");
         metadata.setMaxLines(2);
         metadata.setEllipsize(TextUtils.TruncateAt.END);
@@ -744,24 +804,36 @@ final class TvBrowser extends FrameLayout {
         metadata.setVisibility(GONE);
         metadata.setTag(R.id.catalogue_metadata, movie.optString("meta"));
         info.addView(metadata, new LinearLayout.LayoutParams(copyWidth, -2));
-        TextView synopsis = text("", 16, 0xffc1ccdc); synopsis.setLineSpacing(0, 1.2f); synopsis.setMaxLines(5); synopsis.setEllipsize(TextUtils.TruncateAt.END); synopsis.setTag("synopsis"); info.addView(synopsis, new LinearLayout.LayoutParams(copyWidth, -2));
-        LinearLayout controls = new LinearLayout(activity); controls.setTag("actions"); controls.setGravity(Gravity.CENTER_VERTICAL);
-        Button play = button("Play");
+        TextView synopsis = text("", 16, TvColors.SECONDARY); synopsis.setLineSpacing(0, 1.2f); synopsis.setMaxLines(5); synopsis.setEllipsize(TextUtils.TruncateAt.END); synopsis.setTag("synopsis"); info.addView(synopsis, new LinearLayout.LayoutParams(copyWidth, -2));
+        LinearLayout controls = new LinearLayout(activity);
+        controls.setTag("actions");
+        controls.setGravity(Gravity.CENTER_VERTICAL);
+        controls.setClipChildren(false);
+        Button play = addDetailButton(controls, "Play", 0);
         play.setTag("play");
         play.setEnabled(false);
         play.setAlpha(.4f);
         play.setOnClickListener(v -> actions.play());
-        addDetailButton(controls, play);
-        addDetailButton(controls, watchlistButton(movie));
+        Button trailer = addDetailButton(controls, "Trailer", 0);
+        trailer.setTag("trailer");
+        trailer.setVisibility(GONE);
+        Button episodes = addDetailButton(controls, "Episodes", 0);
+        episodes.setTag("episodes");
+        episodes.setVisibility(GONE);
+        bindWatchlist(addDetailButton(controls, "Save to Watchlist", R.drawable.nav_bookmark), movie);
+        Button favorite = addDetailButton(controls, "Favorite", R.drawable.nav_heart);
+        favorite.setTag("favorite");
+        favorite.setVisibility(GONE);
         LinearLayout.LayoutParams controlsSize = new LinearLayout.LayoutParams(-1, -2);
         controlsSize.topMargin = dp(16);
         info.addView(controls, controlsSize);
         details.addView(info);
         loading(movie.optString("title", "title details"));
     }
-    void detailsReady(String backdrop, String poster, String synopsis, String year, String genre, String cast, long resumePosition, JSONArray episodes) {
+    void detailsReady(JSONObject data, long resumePosition) {
         if (!detailShowing) return; finishLoading(); hero.setVisibility(GONE); message.setVisibility(GONE);
         if (detailBackdrop.getTag() == null && detailPoster.getTag() == null) {
+            String backdrop = data.optString("backdrop"), poster = data.optString("poster");
             JSONObject movie = (JSONObject) detailArt.getTag();
             boolean catalogLandscape = movie.optBoolean("landscape");
             String landscapeUrl = backdrop.isEmpty() && catalogLandscape ? movie.optString("image") : backdrop;
@@ -773,21 +845,36 @@ final class TvBrowser extends FrameLayout {
         }
         TextView metadata = details.findViewWithTag("detail-metadata");
         List<String> parts = new ArrayList<>();
+        String rating = data.optString("rating"), runtime = data.optString("runtime");
+        String year = data.optString("year"), genre = data.optString("genre"), cast = data.optString("cast");
         String catalogueMeta = (String) metadata.getTag(R.id.catalogue_metadata);
         for (String part : catalogueMeta.split(" · ")) {
             if (year.isEmpty() && part.matches("(18|19|20)\\d{2}")) year = part;
             else if (genre.isEmpty() && !part.isEmpty() && !part.matches("(18|19|20)\\d{2}|TV series|S\\d+ E\\d+")) genre = part;
         }
+        if (!rating.isEmpty()) parts.add("★ " + rating);
         if (!year.isEmpty()) parts.add(year);
+        if (!runtime.isEmpty()) parts.add(runtime);
         if (!genre.isEmpty()) parts.add(genre);
         if (!cast.isEmpty()) parts.add("Starring " + cast);
         metadata.setText(TextUtils.join(" · ", parts));
         metadata.setVisibility(parts.isEmpty() ? GONE : VISIBLE);
-        TextView copy = details.findViewWithTag("synopsis"); copy.setText(synopsis);
+        TextView copy = details.findViewWithTag("synopsis"); copy.setText(data.optString("description"));
         Button play = details.findViewWithTag("play"); boolean firstReady = !play.isEnabled(); play.setEnabled(true); play.setAlpha(1); updateResumePosition(resumePosition);
-        LinearLayout controls = details.findViewWithTag("actions"); View old = controls.findViewWithTag("episodes");
-        if (old == null && episodes != null && episodes.length() > 0) {
-            Button choose = button("Episodes"); choose.setTag("episodes"); choose.setOnClickListener(v -> chooseSeason(episodes)); addDetailButton(controls, choose);
+        LinearLayout controls = details.findViewWithTag("actions");
+        Button trailer = controls.findViewWithTag("trailer");
+        String trailerUrl = data.optString("trailer");
+        trailer.setVisibility(trailerUrl.isEmpty() ? GONE : VISIBLE);
+        trailer.setOnClickListener(v -> actions.trailer(trailerUrl));
+        Button episodeButton = controls.findViewWithTag("episodes");
+        JSONArray episodes = data.optJSONArray("episodes");
+        episodeButton.setVisibility(episodes != null && episodes.length() > 0 ? VISIBLE : GONE);
+        episodeButton.setOnClickListener(v -> chooseSeason(episodes));
+        Button favorite = controls.findViewWithTag("favorite");
+        String favoriteId = data.optString("favoriteId");
+        if (favorite.getVisibility() == GONE && !favoriteId.isEmpty()) {
+            favorite.setVisibility(VISIBLE);
+            requestFavorite(favorite, favoriteId, null);
         }
         if (firstReady && !drawer.hasFocus()) play.requestFocus();
     }

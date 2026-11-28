@@ -19,10 +19,10 @@ import java.util.List;
 final class TvNavigationDrawer extends LinearLayout {
     static final int RAIL_WIDTH = 76;
     private static final int DRAWER_WIDTH = 196;
-    private static final int BACKGROUND = 0xff090e17;
-    private static final int ACTIVE = 0xff22334c;
-    private static final int WHITE = 0xfff5f7fb;
-    private static final int MUTED = 0xffaebbd0;
+    private static final int BACKGROUND = TvColors.BLACK;
+    private static final int ACTIVE = TvColors.SELECTED_SURFACE;
+    private static final int WHITE = TvColors.WHITE;
+    private static final int MUTED = TvColors.MUTED;
 
     private final List<Button> destinations = new ArrayList<>();
     private final TextView wordmark;
@@ -41,7 +41,7 @@ final class TvNavigationDrawer extends LinearLayout {
         LinearLayout brand = new LinearLayout(context);
         brand.setGravity(Gravity.CENTER_VERTICAL);
         ImageView mark = new ImageView(context);
-        mark.setImageResource(R.drawable.tv_icon);
+        mark.setImageResource(R.drawable.brand_mark);
         LayoutParams markSize = new LayoutParams(dp(26), dp(26));
         markSize.setMargins(dp(11), 0, dp(11), 0);
         brand.addView(mark, markSize);

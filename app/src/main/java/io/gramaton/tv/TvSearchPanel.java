@@ -1,6 +1,7 @@
 package io.gramaton.tv;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.res.ColorStateList;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
@@ -30,19 +31,26 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Consumer;
+import java.util.function.IntConsumer;
 
 /** Remote-first query entry, with the same field above the editor and the result grid. */
 final class TvSearchPanel {
     private enum Mode { HIDDEN, EDITING, RESULTS }
+    private enum TitleType { ALL, MOVIES, TV_SHOWS }
+
+    private static final String[] TYPE_OPTIONS = {"All titles", "Movies", "TV shows"};
+    private static final String[] GENRE_OPTIONS = {"All genres", "Action", "Adventure", "Animation", "Biography",
+        "Comedy", "Crime", "Documentary", "Drama", "Family", "Fantasy", "History", "Horror", "Music", "Mystery",
+        "Romance", "Science Fiction", "Thriller", "War", "Western"};
 
     private static final int COLUMNS = 7;
     private static final int MAX_SUGGESTIONS = 5;
-    private static final int BACKGROUND = 0xff1b2638;
-    private static final int TEXT = 0xfff5f7fb;
-    private static final int MUTED = 0xffaebbd0;
-    private static final int DARK = 0xff090e17;
-    private static final int DARK_MUTED = 0xff475569;
-    private static final int ACCENT = 0xffd5e7ff;
+    private static final int BACKGROUND = TvColors.SURFACE;
+    private static final int TEXT = TvColors.WHITE;
+    private static final int MUTED = TvColors.MUTED;
+    private static final int DARK = TvColors.BLACK;
+    private static final int DARK_MUTED = 0xff555555;
+    private static final int ACCENT = TvColors.SECONDARY;
 
     final LinearLayout header;
     final LinearLayout editor;
@@ -55,6 +63,7 @@ final class TvSearchPanel {
     private final ProgressBar more;
     private final TextView hint;
     private final Button space, clear, search;
+    private final Button typeFilter, genreFilter;
     private final InputMethodManager inputMethod;
     private final Runnable openEditor, focusMenu, focusResults;
     private final Consumer<JSONObject> openTitle;
@@ -64,6 +73,8 @@ final class TvSearchPanel {
     private final List<View> choices = new ArrayList<>();
     private final LinkedHashMap<String, JSONObject> knownTitles = new LinkedHashMap<>();
     private Mode mode = Mode.HIDDEN;
+    private TitleType titleType = TitleType.ALL;
+    private int genreIndex;
     private boolean numbers, foreground, editorActive, suggestionsUnavailable;
     private String suggestionTerm;
     private Button lastKey;
@@ -99,9 +110,15 @@ final class TvSearchPanel {
         query.setShowSoftInputOnFocus(false);
         query.setBackground(background(BACKGROUND, BACKGROUND, TEXT));
         header.addView(query, new LinearLayout.LayoutParams(0, dp(46), 1));
+        typeFilter = addFilterButton();
+        genreFilter = addFilterButton();
+        typeFilter.setOnClickListener(v -> chooseFilter("Title type", TYPE_OPTIONS, titleType.ordinal(),
+            index -> titleType = TitleType.values()[index]));
+        genreFilter.setOnClickListener(v -> chooseFilter("Genre", GENRE_OPTIONS, genreIndex, index -> genreIndex = index));
+        updateFilterLabels();
         more = new ProgressBar(activity);
         more.setContentDescription("Loading more titles");
-        more.setIndeterminateTintList(ColorStateList.valueOf(0xff70b8ff));
+        more.setIndeterminateTintList(ColorStateList.valueOf(TEXT));
         more.setVisibility(View.INVISIBLE);
         LinearLayout.LayoutParams moreSize = new LinearLayout.LayoutParams(dp(18), dp(18));
         moreSize.leftMargin = dp(14);
@@ -188,6 +205,9 @@ final class TvSearchPanel {
     void close() {
         hideInputMethod();
         mode = Mode.HIDDEN;
+        titleType = TitleType.ALL;
+        genreIndex = 0;
+        updateFilterLabels();
         query.setText("");
         if (numbers) toggleNumbers();
         lastKey = keys.get(0);
@@ -217,6 +237,69 @@ final class TvSearchPanel {
     void dispose() { catalogueSuggestions.close(); phone.dispose(); }
 
     void setPaging(boolean loading) { more.setVisibility(loading ? View.VISIBLE : View.INVISIBLE); }
+
+    boolean hasFilters() { return titleType != TitleType.ALL || genreIndex != 0; }
+
+    JSONArray filterResults(JSONArray titles) {
+        if (!hasFilters()) return titles;
+        JSONArray matches = new JSONArray();
+        for (int i = 0; i < titles.length(); i++) {
+            JSONObject title = titles.optJSONObject(i);
+            if (title != null && matchesFilters(title)) matches.put(title);
+        }
+        return matches;
+    }
+
+    private boolean matchesFilters(JSONObject title) {
+        if (titleType != TitleType.ALL && title.optBoolean("series") != (titleType == TitleType.TV_SHOWS)) return false;
+        if (genreIndex == 0) return true;
+        String selected = GENRE_OPTIONS[genreIndex];
+        String genres = title.optString("genre");
+        if (genres.isEmpty()) {
+            String meta = title.optString("meta");
+            genres = meta.substring(meta.lastIndexOf('·') + 1);
+        }
+        for (String genre : genres.split(",")) {
+            String name = genre.trim();
+            if (selected.equalsIgnoreCase(name) || (selected.equals("Science Fiction") && name.equalsIgnoreCase("Sci-Fi"))) return true;
+        }
+        return false;
+    }
+
+    private Button addFilterButton() {
+        Button button = control("", false);
+        button.setPadding(dp(12), 0, dp(12), 0);
+        LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(-2, dp(46));
+        size.setMarginStart(dp(8));
+        header.addView(button, size);
+        button.setOnKeyListener((view, key, event) -> {
+            if (key != KeyEvent.KEYCODE_DPAD_DOWN || event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (isEditing()) focusKeyboard(); else focusResults.run();
+            return true;
+        });
+        return button;
+    }
+
+    private void updateFilterLabels() {
+        typeFilter.setText("Type · " + TYPE_OPTIONS[titleType.ordinal()]);
+        genreFilter.setText(genreIndex == 0 ? GENRE_OPTIONS[0] : "Genre · " + GENRE_OPTIONS[genreIndex]);
+    }
+
+    private void chooseFilter(String title, String[] choices, int selected, IntConsumer setFilter) {
+        hideInputMethod();
+        new AlertDialog.Builder(activity).setTitle(title)
+            .setSingleChoiceItems(choices, selected, (dialog, index) -> {
+                dialog.dismiss();
+                if (index == selected) return;
+                setFilter.accept(index);
+                updateFilterLabels();
+                if (isEditing()) {
+                    suggestionTerm = null;
+                    refreshSuggestions();
+                } else submitQuery();
+            }).setNegativeButton("Cancel", null).show();
+    }
+
     void focusField() { query.requestFocus(); }
     void focusKeyboard() {
         if (!lastKey.isEnabled()) lastKey = keys.get(0);
@@ -267,13 +350,13 @@ final class TvSearchPanel {
     private void showLocalSuggestions(String term) {
         List<JSONObject> titles = new ArrayList<>();
         for (JSONObject item : knownTitles.values()) {
-            if (item.optString("title").trim().toLowerCase(Locale.ROOT).startsWith(term)) titles.add(item);
+            if (item.optString("title").trim().toLowerCase(Locale.ROOT).startsWith(term) && matchesFilters(item)) titles.add(item);
             if (titles.size() == MAX_SUGGESTIONS) break;
         }
         if (titles.size() < MAX_SUGGESTIONS) {
             for (JSONObject item : knownTitles.values()) {
                 String name = item.optString("title").trim().toLowerCase(Locale.ROOT);
-                if (!name.startsWith(term) && name.contains(term)) titles.add(item);
+                if (!name.startsWith(term) && name.contains(term) && matchesFilters(item)) titles.add(item);
                 if (titles.size() == MAX_SUGGESTIONS) break;
             }
         }
@@ -285,7 +368,10 @@ final class TvSearchPanel {
         if (suggestions.hasFocus()) focusKeyboard();
         choices.clear();
         suggestions.removeAllViews();
-        for (int i = 0; i < Math.min(MAX_SUGGESTIONS, titles.size()); i++) addSuggestion(titles.get(i));
+        for (JSONObject title : titles) {
+            if (matchesFilters(title)) addSuggestion(title);
+            if (choices.size() == MAX_SUGGESTIONS) break;
+        }
         hint.setVisibility(choices.isEmpty() && !emptyMessage.isEmpty() ? View.VISIBLE : View.GONE);
         hint.setText(emptyMessage);
     }
@@ -415,6 +501,11 @@ final class TvSearchPanel {
             return true;
         }
         if (key == KeyEvent.KEYCODE_DPAD_LEFT && !isEditing()) { focusMenu.run(); return true; }
+        if (key == KeyEvent.KEYCODE_DPAD_RIGHT && (!isEditing() ||
+                (query.getSelectionStart() == query.length() && query.getSelectionEnd() == query.length()))) {
+            typeFilter.requestFocus();
+            return true;
+        }
         if (key == KeyEvent.KEYCODE_DPAD_CENTER || key == KeyEvent.KEYCODE_ENTER) {
             if (!isEditing()) { openEditor.run(); return true; }
             if (key == KeyEvent.KEYCODE_ENTER) { submitQuery(); return true; }

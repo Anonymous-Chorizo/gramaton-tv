@@ -214,7 +214,7 @@ final class TvPosterGrid extends RecyclerView {
             tile.setPivotX(0);
             image = new ImageView(tile.getContext());
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            image.setBackground(round(0xff1c293b, 7));
+            image.setBackground(round(TvColors.SURFACE, 7));
             image.setClipToOutline(true);
             image.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
             tile.addView(image, new FrameLayout.LayoutParams(-1, -1));
