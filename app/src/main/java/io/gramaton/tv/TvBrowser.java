@@ -11,8 +11,6 @@ import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
-import android.view.inputmethod.EditorInfo;
-import android.view.inputmethod.InputMethodManager;
 import android.widget.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -22,7 +20,7 @@ import java.util.*;
 final class TvBrowser extends FrameLayout {
     interface Actions {
         void navigate(String url, String label); void open(JSONObject movie); void play();
-        void search(String query); void account(); void checkForUpdates(); void retry(); void exitToFireTv();
+        void openSearch(); void search(String query); void account(); void showUpdate(); void retry(); void exitToFireTv();
         boolean loadMore(boolean retry);
         void episode(int season, int episode);
         void filter(String parameter, String value);
@@ -32,18 +30,18 @@ final class TvBrowser extends FrameLayout {
     private final Actions actions;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final TvImageLoader artwork = new TvImageLoader();
-    private final LinearLayout browserColumn, searchBar, gridToolbar, rows, details, loadingPanel;
+    private final LinearLayout browserColumn, gridToolbar, rows, details, loadingPanel;
     private final TvNavigationDrawer drawer;
+    private final TvSearchPanel search;
     private final FrameLayout content, hero;
     private final ImageView heroImage;
     private FrameLayout detailArt;
     private ImageView detailPoster, detailBackdrop;
     private final TextView title, subtitle, description, kicker, message, loadingTitle, loadingStage, gridTitle;
     private final ProgressBar spinner, refreshSpinner, moreSpinner;
-    private final EditText query;
     private final ScrollView scroller;
     private final TvPosterGrid grid;
-    private final Button retry, sortFilter, genreFilter, retryPage;
+    private final Button retry, sortFilter, genreFilter, retryPage, updates;
     private final List<List<View>> cards = new ArrayList<>();
     private final Map<String, View> cardViews = new HashMap<>();
     private final Map<String, HorizontalScrollView> horizontalRows = new LinkedHashMap<>();
@@ -53,11 +51,13 @@ final class TvBrowser extends FrameLayout {
     private View lastCard;
     private boolean detailShowing, loading, artworkQueued, changingPage;
     private boolean focusCatalogueOnRender = true;
+    private boolean focusFirstSearchResult;
     private boolean gridMode;
     private boolean moreAvailable, moreLoading, moreFailed;
     private String signature = "", pageLabel = "Home", pageKey = "https://gramaton.io/", focusedKey = "";
     private String renderedLabel = "";
     private String heroUrl = "";
+    private JSONObject renderedCatalogue;
     private JSONObject selectedMovie;
     private static final class Poster {
         final String url; final ImageView view;
@@ -68,7 +68,7 @@ final class TvBrowser extends FrameLayout {
         final Map<String, Integer> x = new HashMap<>();
     }
 
-    TvBrowser(Activity activity, Actions actions) {
+    TvBrowser(Activity activity, CatalogueSuggestions catalogueSuggestions, Actions actions) {
         super(activity); this.activity = activity; this.actions = actions;
         setBackgroundColor(BG);
         browserColumn = new LinearLayout(activity);
@@ -92,26 +92,23 @@ final class TvBrowser extends FrameLayout {
         drawer = new TvNavigationDrawer(activity, scrim, this::focusBrowser);
         addView(drawer, new FrameLayout.LayoutParams(dp(TvNavigationDrawer.RAIL_WIDTH), -1, Gravity.LEFT));
         drawer.addDestination("Home", R.drawable.nav_house, () -> openCatalogue("https://gramaton.io/", "Home"));
-        drawer.addDestination("Search", R.drawable.nav_search, this::showSearch);
+        drawer.addDestination("Search", R.drawable.nav_search, () -> showSearchEditor(false));
         drawer.addDestination("Movies", R.drawable.nav_clapperboard, () -> openCatalogue("https://gramaton.io/movies", "Movies"));
         drawer.addDestination("TV", R.drawable.nav_tv_minimal, () -> openCatalogue("https://gramaton.io/series", "TV"));
         drawer.addDestination("Watchlist", R.drawable.nav_bookmark, () -> openCatalogue("https://gramaton.io/watchlist", "Watchlist"));
         drawer.addDestination("Favorites", R.drawable.nav_heart, () -> openCatalogue("https://gramaton.io/favorites", "Favorites"));
         drawer.separateActions();
+        updates = drawer.addDestination("Updates", R.drawable.nav_download, actions::showUpdate);
+        updates.setVisibility(GONE);
         drawer.addDestination("Account", R.drawable.nav_circle_user_round, actions::account);
-        drawer.addDestination("Updates", R.drawable.nav_refresh_cw, actions::checkForUpdates);
         drawer.select("Home");
 
-        searchBar = new LinearLayout(activity); searchBar.setGravity(Gravity.CENTER_VERTICAL); searchBar.setPadding(0, dp(8), 0, dp(5));
-        query = new EditText(activity); query.setSingleLine(true); query.setTextColor(WHITE); query.setHintTextColor(MUTED);
-        query.setHint("Search movies and TV shows"); query.setTextSize(19); query.setImeOptions(EditorInfo.IME_ACTION_SEARCH); query.setSelectAllOnFocus(true);
-        searchBar.addView(query, new LinearLayout.LayoutParams(0, dp(48), 1));
-        Button submit = button("Search"); submit.setOnClickListener(v -> submitSearch()); searchBar.addView(submit);
-        searchBar.setVisibility(GONE); browserColumn.addView(searchBar);
-        query.setOnEditorActionListener((v, action, event) -> {
-            if (action == EditorInfo.IME_ACTION_SEARCH || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER && event.getAction() == KeyEvent.ACTION_DOWN)) { submitSearch(); return true; }
-            return false;
-        });
+        search = new TvSearchPanel(activity, catalogueSuggestions, () -> showSearchEditor(true), drawer::focusSelected,
+            this::focusSearchResults, query -> {
+                focusFirstSearchResult = true;
+                actions.search(query);
+            });
+        browserColumn.addView(search.header);
 
         gridToolbar = new LinearLayout(activity);
         gridToolbar.setGravity(Gravity.CENTER_VERTICAL);
@@ -157,7 +154,10 @@ final class TvBrowser extends FrameLayout {
         grid = new TvPosterGrid(activity, artwork, new TvPosterGrid.Actions() {
             @Override public void open(JSONObject movie) { rememberPage(); actions.open(movie); }
             @Override public void focusMenu() { drawer.focusSelected(); }
-            @Override public void focusFilters() { if (!sortFilter.requestFocus()) genreFilter.requestFocus(); }
+            @Override public void focusFilters() {
+                if (search.isOpen()) search.focusField();
+                else if (!sortFilter.requestFocus()) genreFilter.requestFocus();
+            }
             @Override public void reachEnd() { if (moreFailed) retryPage.requestFocus(); else requestMore(); }
             @Override public void nearEnd() { requestMore(); }
         });
@@ -180,6 +180,7 @@ final class TvBrowser extends FrameLayout {
         loadingStage = text("Connecting…", 15, MUTED); loadingStage.setGravity(Gravity.CENTER); loadingStage.setVisibility(GONE); loadingPanel.addView(loadingStage);
         retry = button("Try again"); retry.setOnClickListener(v -> actions.retry()); retry.setVisibility(GONE); loadingPanel.addView(retry, new LinearLayout.LayoutParams(-2, dp(42)));
         content.addView(loadingPanel, new FrameLayout.LayoutParams(-1, -1));
+        content.addView(search.editor, new FrameLayout.LayoutParams(-1, -1));
         getViewTreeObserver().addOnScrollChangedListener(this::queueArtwork); setFocusable(false);
     }
     private void setBrowseInsets(boolean browsing) {
@@ -203,10 +204,11 @@ final class TvBrowser extends FrameLayout {
         return b;
     }
     private void focusBrowser() {
-        if (loadingPanel.getVisibility() == VISIBLE) {
+        if (search.isEditing()) search.focusKeyboard();
+        else if (search.isOpen()) focusSearchResults();
+        else if (loadingPanel.getVisibility() == VISIBLE) {
             if (retry.getVisibility() == VISIBLE) retry.requestFocus();
-        } else if (searchBar.getVisibility() == VISIBLE) query.requestFocus();
-        else focusRememberedCard();
+        } else focusRememberedCard();
     }
     private void openCatalogue(String url, String label) {
         focusCatalogueWhenReady();
@@ -214,6 +216,11 @@ final class TvBrowser extends FrameLayout {
     }
     void focusCatalogueWhenReady() { focusCatalogueOnRender = true; }
     boolean dismissDrawer() { return drawer.hasFocus() && focusRememberedCard(); }
+
+    void setUpdateAvailable(boolean available) {
+        if (!available && updates.hasFocus()) drawer.focusDestination("Account");
+        updates.setVisibility(available ? VISIBLE : GONE);
+    }
     private boolean navigateGridFilter(Button filter, int key, KeyEvent event) {
         if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
         if (key == KeyEvent.KEYCODE_DPAD_DOWN) focusRememberedCard();
@@ -235,7 +242,7 @@ final class TvBrowser extends FrameLayout {
         };
     }
     private void updateGridToolbarVisibility() {
-        gridToolbar.setVisibility(gridMode && isGridListing(pageLabel) && !detailShowing && searchBar.getVisibility() != VISIBLE ? VISIBLE : GONE);
+        gridToolbar.setVisibility(gridMode && isGridListing(pageLabel) && !detailShowing && !search.isOpen() ? VISIBLE : GONE);
     }
     private void bindGridFilter(Button button, String title, String parameter, JSONObject filter) {
         JSONArray options = filter == null ? null : filter.optJSONArray("options");
@@ -263,7 +270,7 @@ final class TvBrowser extends FrameLayout {
             }).show());
     }
     private void selectDestination(String label) {
-        String name = label.startsWith("Search:") ? "Search" : label.equals("Home") || label.equals("Favorites") || label.equals("Watchlist") ? label : label.equals("TV") || label.equals("Recent Episodes") ? "TV" : "Movies";
+        String name = search.isOpen() || label.startsWith("Search:") ? "Search" : label.equals("Home") || label.equals("Favorites") || label.equals("Watchlist") ? label : label.equals("TV") || label.equals("Recent Episodes") ? "TV" : "Movies";
         drawer.select(name);
     }
     void setPageKey(String key) { if (!pageKey.equals(key)) { rememberPage(); pageKey = key; changingPage = true; } }
@@ -282,19 +289,21 @@ final class TvBrowser extends FrameLayout {
         snapshots.put(pageKey, state);
     }
     private void showCatalogueViews(boolean visible) {
+        visible = visible && !search.isEditing();
         grid.setVisibility(visible && gridMode ? VISIBLE : GONE);
         scroller.setVisibility(visible && !gridMode ? VISIBLE : GONE);
         updateMoreStatus();
     }
     private void updateMoreStatus() {
         moreSpinner.setVisibility(moreLoading ? VISIBLE : INVISIBLE);
+        search.setPaging(moreLoading && !search.isEditing());
         retryPage.setVisibility(moreFailed && grid.getVisibility() == VISIBLE && !loading ? VISIBLE : GONE);
     }
     private void requestMore() {
         if (!moreFailed) startMore(false);
     }
     private void startMore(boolean retry) {
-        if (!grid.isShown() || !moreAvailable || moreLoading || loading || searchBar.getVisibility() == VISIBLE) return;
+        if (!grid.isShown() || !moreAvailable || moreLoading || loading) return;
         if (!actions.loadMore(retry)) return;
         if (retryPage.hasFocus()) grid.focusSelected();
         moreFailed = false;
@@ -312,6 +321,7 @@ final class TvBrowser extends FrameLayout {
         updateMoreStatus();
     }
     void appendGridPage(JSONArray items, boolean hasNext) {
+        search.indexTitles(items);
         int added = grid.append(items);
         moreAvailable = hasNext && added > 0;
         moreLoading = false;
@@ -323,16 +333,68 @@ final class TvBrowser extends FrameLayout {
         hero.setVisibility(GONE);
         if (!detailShowing) { pageLabel = label; updateGridToolbarVisibility(); selectDestination(label); kicker.setText("GRAMATON"); title.setText(label); subtitle.setText("Movies and TV, made for your remote"); description.setText(""); showCatalogueViews(false); }
         message.setVisibility(GONE); refreshSpinner.setVisibility(INVISIBLE); loading = true; loadingStage.setVisibility(GONE);
-        loadingTitle.setText("Loading " + label + "…"); spinner.setVisibility(VISIBLE); retry.setVisibility(GONE); loadingPanel.setVisibility(VISIBLE); loadingPanel.bringToFront();
+        loadingTitle.setText(label.startsWith("Search: ") ? "Searching…" : "Loading " + label + "…");
+        spinner.setVisibility(VISIBLE); retry.setVisibility(GONE);
+        loadingPanel.setVisibility(search.isEditing() ? GONE : VISIBLE); loadingPanel.bringToFront();
     }
     void refreshing(String label) { pageLabel = label; selectDestination(label); refreshSpinner.setVisibility(VISIBLE); }
     void finishLoading() { loading = false; loadingPanel.setVisibility(GONE); refreshSpinner.setVisibility(INVISIBLE); }
     void status(String value) {
         if (loading) { loading = false; spinner.setVisibility(GONE); loadingTitle.setText("Couldn't finish loading"); loadingStage.setText(value); loadingStage.setVisibility(VISIBLE); retry.setVisibility(VISIBLE); }
-        else { message.setText(value); message.setVisibility(VISIBLE); refreshSpinner.setVisibility(INVISIBLE); }
+        else if (!search.isEditing()) { message.setText(value); message.setVisibility(VISIBLE); refreshSpinner.setVisibility(INVISIBLE); }
     }
-    private void showSearch() { hideDetails(); drawer.select("Search"); searchBar.setVisibility(VISIBLE); updateGridToolbarVisibility(); query.requestFocus(); query.selectAll(); ((InputMethodManager)activity.getSystemService(Activity.INPUT_METHOD_SERVICE)).showSoftInput(query, InputMethodManager.SHOW_IMPLICIT); }
-    private void submitSearch() { String q = query.getText().toString().trim(); if (q.isEmpty()) { query.setError("Enter a title"); return; } ((InputMethodManager)activity.getSystemService(Activity.INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(query.getWindowToken(), 0); searchBar.setVisibility(GONE); drawer.focusDestination("Search"); focusCatalogueWhenReady(); actions.search(q); }
+
+    boolean isSearchOpen() { return search.isOpen(); }
+    boolean isSearchEditing() { return search.isEditing(); }
+
+    void showSearchEditor(boolean fromField) {
+        if (!search.isOpen()) { rememberPage(); actions.openSearch(); }
+        search.edit(fromField);
+        drawer.select("Search");
+        hero.setVisibility(GONE);
+        message.setVisibility(GONE);
+        loadingPanel.setVisibility(GONE);
+        refreshSpinner.setVisibility(INVISIBLE);
+        updateGridToolbarVisibility();
+        showCatalogueViews(false);
+    }
+
+    void showSearchResults(String query) {
+        search.results(query);
+        updateGridToolbarVisibility();
+        focusCatalogueWhenReady();
+    }
+
+    private void focusSearchResults() {
+        if (loadingPanel.isShown() && retry.isShown()) retry.requestFocus();
+        else if (!grid.focusSelected()) search.focusField();
+    }
+
+    void closeSearch() {
+        search.close();
+        focusFirstSearchResult = false;
+        updateGridToolbarVisibility();
+    }
+
+    void resumeCatalogueAfterSearch() {
+        closeSearch();
+        selectDestination(pageLabel);
+        boolean showLoading = loading || retry.getVisibility() == VISIBLE;
+        loadingPanel.setVisibility(showLoading ? VISIBLE : GONE);
+        showCatalogueViews(!showLoading);
+        if (lastCard != null && lastCard.getTag() instanceof JSONObject movie) updateHero(movie, pageLabel);
+        if (!focusRememberedCard() && !retry.requestFocus()) drawer.focusSelected();
+        queueArtwork();
+    }
+
+    JSONObject captureCatalogue() throws org.json.JSONException {
+        if (changingPage || renderedCatalogue == null) return null;
+        if (!gridMode) return renderedCatalogue;
+        JSONObject snapshot = new JSONObject(renderedCatalogue.toString());
+        snapshot.put("cards", grid.copyItems());
+        snapshot.put("next", moreAvailable);
+        return snapshot;
+    }
     void resetSignature() { signature = ""; }
     boolean hasRenderedCatalogue(String label) { return !signature.isEmpty() && !changingPage && renderedLabel.equals(label); }
 
@@ -372,6 +434,7 @@ final class TvBrowser extends FrameLayout {
 
     void render(JSONObject data, String label) throws Exception {
         JSONArray items = data.getJSONArray("cards");
+        search.indexTitles(items);
         if (label.equals("Home") || label.equals("Watchlist")) {
             JSONArray merged = new JSONArray();
             JSONArray saved = deviceWatchlist();
@@ -406,7 +469,7 @@ final class TvBrowser extends FrameLayout {
                 if (lastCard != null && lastCard.getTag() instanceof JSONObject movie) {
                     updateHero(movie, label.equals("Home") ? movie.optString("section", "Featured") : label);
                 }
-                if (focusCatalogueOnRender) focusRememberedCard();
+                if (focusCatalogueOnRender && !search.isEditing()) focusRememberedCard();
             }
             focusCatalogueOnRender = false;
             return;
@@ -415,8 +478,12 @@ final class TvBrowser extends FrameLayout {
         focusCatalogueOnRender = false;
         message.setVisibility(GONE);
         if (!changingPage) rememberPage(); changingPage = false;
-        Snapshot state = snapshots.get(pageKey); signature = newSignature; pageLabel = label;
+        boolean newSearchResults = focusFirstSearchResult && label.startsWith("Search: ");
+        if (newSearchResults) focusFirstSearchResult = false;
+        Snapshot state = newSearchResults ? null : snapshots.get(pageKey);
+        signature = newSignature; pageLabel = label;
         renderedLabel = label;
+        renderedCatalogue = data;
         gridMode = isGridListing(label);
         moreAvailable = gridMode && data.optBoolean("next");
         moreLoading = false;
@@ -432,11 +499,12 @@ final class TvBrowser extends FrameLayout {
             grid.restore(state == null ? "" : state.key, state == null ? 0 : state.gridPosition, state == null ? 0 : state.gridOffset);
             showCatalogueViews(!detailShowing);
             if (grid.hasPosters()) {
-                if (restoreCardFocus && !detailShowing && searchBar.getVisibility() != VISIBLE) grid.focusSelected();
-            } else {
+                if (restoreCardFocus && !detailShowing && !search.isEditing()) grid.focusSelected();
+            } else if (!search.isEditing()) {
                 message.setText(filters == null ? "No titles found." : "No titles match these filters.");
                 message.setVisibility(VISIBLE);
-                if (!gridToolbar.hasFocus() && !sortFilter.requestFocus()) drawer.focusSelected();
+                if (search.isOpen()) search.focusField();
+                else if (!gridToolbar.hasFocus() && !sortFilter.requestFocus()) drawer.focusSelected();
             }
             return;
         }
@@ -472,7 +540,7 @@ final class TvBrowser extends FrameLayout {
                 if (detailShowing || !restoreTarget.isAttachedToWindow()) return;
                 if (state != null) { for (Map.Entry<String, Integer> x : state.x.entrySet()) { HorizontalScrollView row = horizontalRows.get(x.getKey()); if (row != null) row.scrollTo(x.getValue(), 0); } scroller.scrollTo(0, state.y); }
                 else scroller.scrollTo(0, 0);
-                if (restoreCardFocus && searchBar.getVisibility() != VISIBLE) restoreTarget.requestFocus();
+                if (restoreCardFocus && !search.isEditing()) restoreTarget.requestFocus();
                 queueArtwork();
             });
         }
@@ -609,7 +677,7 @@ final class TvBrowser extends FrameLayout {
         } return false;
     }
     private void updateHero(JSONObject movie, String row) {
-        if (gridMode) { hero.setVisibility(GONE); return; }
+        if (gridMode || search.isEditing()) { hero.setVisibility(GONE); return; }
         hero.setVisibility(detailShowing || !pageLabel.equals("Home") ? VISIBLE : GONE);
         selectedMovie = movie; kicker.setText(row.toUpperCase(java.util.Locale.ROOT)); title.setText(movie.optString("title")); subtitle.setText(movie.optString("meta"));
         String synopsis = movie.optString("description"); description.setText(synopsis.isEmpty() ? (movie.optBoolean("series") ? "Explore the series and choose an episode." : "Select to explore this movie and pick up where you left off.") : synopsis);
@@ -635,7 +703,7 @@ final class TvBrowser extends FrameLayout {
     }
 
     void showDetails(JSONObject movie) {
-        rememberPage(); detailShowing = true; searchBar.setVisibility(GONE); showCatalogueViews(false); details.setVisibility(VISIBLE); details.removeAllViews();
+        rememberPage(); detailShowing = true; search.updateVisibility(true); showCatalogueViews(false); details.setVisibility(VISIBLE); details.removeAllViews();
         hero.setVisibility(GONE);
         updateGridToolbarVisibility();
         drawer.setVisibility(GONE);
@@ -740,19 +808,12 @@ final class TvBrowser extends FrameLayout {
         }).setNegativeButton("Cancel", null).show();
     }
     boolean isDetailShowing() { return detailShowing; }
-    void hideDetails() { boolean restore = detailShowing && !drawer.hasFocus(); finishLoading(); detailShowing = false; if (detailArt != null) { content.removeView(detailArt); detailArt = null; detailPoster = null; detailBackdrop = null; } drawer.setVisibility(VISIBLE); setBrowseInsets(true); details.setVisibility(GONE); updateGridToolbarVisibility(); showCatalogueViews(true); queueArtwork(); if (restore) focusRememberedCard(); }
+    void hideDetails() { boolean restore = detailShowing && !drawer.hasFocus(); finishLoading(); detailShowing = false; if (detailArt != null) { content.removeView(detailArt); detailArt = null; detailPoster = null; detailBackdrop = null; } drawer.setVisibility(VISIBLE); setBrowseInsets(true); details.setVisibility(GONE); search.updateVisibility(false); updateGridToolbarVisibility(); showCatalogueViews(true); queueArtwork(); if (restore) focusRememberedCard(); }
     void restoreFocus() { if (detailShowing) { View play = details.findViewWithTag("play"); if (play != null) play.requestFocus(); } else focusRememberedCard(); }
     private boolean focusRememberedCard() {
         if (gridMode) return grid.focusSelected();
         if (lastCard != null && lastCard.getParent() != null) return lastCard.requestFocus();
         return !cards.isEmpty() && !cards.get(0).isEmpty() && cards.get(0).get(0).requestFocus();
-    }
-    boolean closeSearch() {
-        if (searchBar.getVisibility() != VISIBLE) return false;
-        searchBar.setVisibility(GONE);
-        updateGridToolbarVisibility();
-        if (!drawer.hasFocus()) drawer.focusDestination("Search");
-        return true;
     }
     void trimArtwork() {
         artwork.trimCache();
@@ -764,5 +825,6 @@ final class TvBrowser extends FrameLayout {
             }
         }
     }
-    void dispose() { main.removeCallbacksAndMessages(null); artwork.close(); }
+    void setForeground(boolean foreground) { search.setForeground(foreground); }
+    void dispose() { main.removeCallbacksAndMessages(null); search.dispose(); artwork.close(); }
 }

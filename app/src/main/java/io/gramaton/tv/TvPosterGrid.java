@@ -106,6 +106,7 @@ final class TvPosterGrid extends RecyclerView {
     }
 
     boolean hasPosters() { return posters.getItemCount() > 0; }
+    JSONArray copyItems() { return new JSONArray(posters.items); }
     String selectedUrl() { return selectedUrl; }
     int firstVisiblePosition() { return layout.findFirstVisibleItemPosition(); }
     int firstVisibleOffset() {
