@@ -6,7 +6,7 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
-    <application android:label="Gramaton TV" android:icon="${launcherIcon}" android:roundIcon="@mipmap/ic_launcher" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:usesCleartextTraffic="false" android:banner="@drawable/banner" android:enableOnBackInvokedCallback="false">
+    <application android:label="Gramaton TV" android:icon="${launcherIcon}" android:roundIcon="@mipmap/ic_launcher" android:theme="@style/GramatonTheme" android:allowBackup="false" android:usesCleartextTraffic="false" android:banner="@drawable/banner" android:enableOnBackInvokedCallback="false">
         <activity android:name=".MainActivity" android:label="Gramaton TV" android:icon="${launcherIcon}" android:banner="@drawable/banner" android:exported="true" android:screenOrientation="landscape" android:configChanges="keyboardHidden|orientation|screenSize">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /><category android:name="android.intent.category.LEANBACK_LAUNCHER" /></intent-filter>
         </activity>

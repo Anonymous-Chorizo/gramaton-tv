@@ -41,7 +41,7 @@ final class PlaybackControls extends FrameLayout {
     private ExoPlayer player;
     private PlaybackTimeline seek;
     private boolean visible = true, pointerSeeking, disposed;
-    private static final int WHITE = 0xfffafafa, MUTED = 0xffc7c7cc;
+    private static final int WHITE = 0xfffafafa, MUTED = 0xffc7c7c7;
 
     PlaybackControls(Activity activity, PlayerView video, String title, String metadata, Actions actions) {
         super(activity); this.activity = activity; this.video = video; this.actions = actions;
@@ -99,10 +99,10 @@ final class PlaybackControls extends FrameLayout {
         playPause.setOnFocusChangeListener((view, focused) -> {
             GradientDrawable circle = new GradientDrawable();
             circle.setShape(GradientDrawable.OVAL);
-            circle.setColor(focused ? WHITE : 0x553d3d42);
+            circle.setColor(focused ? WHITE : 0x553d3d3d);
             circle.setStroke(dp(1), focused ? WHITE : 0x22ffffff);
             playPause.setBackground(circle);
-            playPause.setTextColor(focused ? 0xff101012 : WHITE);
+            playPause.setTextColor(focused ? TvColors.BLACK : WHITE);
             scheduleHide();
         });
         playPause.getOnFocusChangeListener().onFocusChange(playPause, false);
@@ -112,19 +112,19 @@ final class PlaybackControls extends FrameLayout {
         captions = addControl("CC", "Subtitles", () -> showTracks(C.TRACK_TYPE_TEXT));
         panel = new FrameLayout(activity); panel.setVisibility(GONE);
         FrameLayout.LayoutParams panelSize=new FrameLayout.LayoutParams(dp(330),dp(270),Gravity.RIGHT|Gravity.BOTTOM); panelSize.rightMargin=dp(48);panelSize.bottomMargin=dp(190);addView(panel,panelSize);
-        LinearLayout panelBody=new LinearLayout(activity);panelBody.setOrientation(LinearLayout.VERTICAL);panelBody.setPadding(dp(16),dp(16),dp(16),dp(12));panelBody.setBackground(pill(0xf028282b,20,0x44ffffff));panel.addView(panelBody,new FrameLayout.LayoutParams(-1,-1));
+        LinearLayout panelBody=new LinearLayout(activity);panelBody.setOrientation(LinearLayout.VERTICAL);panelBody.setPadding(dp(16),dp(16),dp(16),dp(12));panelBody.setBackground(pill(0xf0282828,20,0x44ffffff));panel.addView(panelBody,new FrameLayout.LayoutParams(-1,-1));
         menuTitle=text("",19,WHITE); menuTitle.setPadding(dp(8),0,0,dp(10));panelBody.addView(menuTitle);
         ScrollView scroll=new ScrollView(activity);scroll.setFocusable(false);scroll.setVerticalScrollBarEnabled(false);menu=new LinearLayout(activity);menu.setOrientation(LinearLayout.VERTICAL);scroll.addView(menu);panelBody.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
         buffering = new ProgressBar(activity); buffering.setIndeterminateTintList(ColorStateList.valueOf(WHITE));buffering.setVisibility(GONE);addView(buffering,new FrameLayout.LayoutParams(dp(40),dp(40),Gravity.CENTER));
-        feedback=text("",16,WHITE);feedback.setGravity(Gravity.CENTER);feedback.setPadding(dp(18),dp(10),dp(18),dp(10));feedback.setBackground(pill(0xcf28282b,18,0x33ffffff));feedback.setVisibility(GONE);FrameLayout.LayoutParams feedbackSize=new FrameLayout.LayoutParams(-2,-2,Gravity.CENTER_HORIZONTAL|Gravity.TOP);feedbackSize.topMargin=dp(48);addView(feedback,feedbackSize);
+        feedback=text("",16,WHITE);feedback.setGravity(Gravity.CENTER);feedback.setPadding(dp(18),dp(10),dp(18),dp(10));feedback.setBackground(pill(0xcf282828,18,0x33ffffff));feedback.setVisibility(GONE);FrameLayout.LayoutParams feedbackSize=new FrameLayout.LayoutParams(-2,-2,Gravity.CENTER_HORIZONTAL|Gravity.TOP);feedbackSize.topMargin=dp(48);addView(feedback,feedbackSize);
         setOnClickListener(v -> { if(visible) hide(); else show(); });
     }
     private int dp(int n){return Math.round(n*getResources().getDisplayMetrics().density);}
     private TextView text(String value,int size,int color){TextView v=new TextView(activity);v.setText(value);v.setTextSize(size);v.setTextColor(color);return v;}
     private GradientDrawable pill(int fill,int radius,int border){GradientDrawable d=new GradientDrawable();d.setColor(fill);d.setCornerRadius(dp(radius));if(border!=0)d.setStroke(dp(1),border);return d;}
     private Button control(String label,Runnable action){
-        Button b=new Button(activity);b.setText(label);b.setAllCaps(false);b.setTextSize(14);b.setTextColor(WHITE);b.setMinWidth(0);b.setMinimumWidth(0);b.setMinimumHeight(0);b.setPadding(dp(16),0,dp(16),0);b.setBackground(pill(0x553d3d42,19,0x22ffffff));b.setFocusableInTouchMode(true);
-        b.setOnFocusChangeListener((v,focus)->{b.setTextColor(focus?0xff101012:WHITE);b.setBackground(pill(focus?WHITE:0x553d3d42,19,focus?0:0x22ffffff));scheduleHide();});b.setOnClickListener(v->{action.run();scheduleHide();});return b;
+        Button b=new Button(activity);b.setText(label);b.setAllCaps(false);b.setTextSize(14);b.setTextColor(WHITE);b.setMinWidth(0);b.setMinimumWidth(0);b.setMinimumHeight(0);b.setPadding(dp(16),0,dp(16),0);b.setBackground(pill(0x553d3d3d,19,0x22ffffff));b.setFocusableInTouchMode(true);
+        b.setOnFocusChangeListener((v,focus)->{b.setTextColor(focus?TvColors.BLACK:WHITE);b.setBackground(pill(focus?WHITE:0x553d3d3d,19,focus?0:0x22ffffff));scheduleHide();});b.setOnClickListener(v->{action.run();scheduleHide();});return b;
     }
     private Button addControl(String label,String accessibility,Runnable action){Button b=control(label,action);b.setContentDescription(accessibility);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(38));lp.rightMargin=dp(8);buttons.addView(b,lp);transport.add(b);return b;}
     void bind(ExoPlayer next){

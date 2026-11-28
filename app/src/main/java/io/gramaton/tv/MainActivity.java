@@ -1,12 +1,16 @@
 package io.gramaton.tv;
 
 import android.app.Activity;
+import android.app.Dialog;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
@@ -27,13 +31,17 @@ import androidx.media3.ui.PlayerView;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.function.Consumer;
 
 /** Playback feasibility prototype. No service API or native integration is assumed. */
 @androidx.annotation.OptIn(markerClass = androidx.media3.common.util.UnstableApi.class)
 public final class MainActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private WebView web;
+    private WebView trailerPlayer;
+    private Dialog trailerDialog;
     private FrameLayout root;
     private LinearLayout browser;
     private TextView status;
@@ -55,9 +63,10 @@ public final class MainActivity extends Activity {
     private String catalogueUrl = "https://gramaton.io/", catalogueLabel = "Home";
     private JSONObject currentMovie;
     private boolean preserveCatalogueViews;
+    private boolean favoritesChanged;
     private int pageEpoch;
     private boolean accountVisible;
-    private String catalogueScript, detailsScript;
+    private String catalogueScript, detailsScript, favoritesScript;
     private int selectedSeason, selectedEpisode;
     private boolean documentReady;
     private JSONObject gridSourcePage;
@@ -130,6 +139,7 @@ public final class MainActivity extends Activity {
         root.addView(browser, new FrameLayout.LayoutParams(-1, -1));
         catalogueScript = readAsset("catalogue.js");
         detailsScript = readAsset("details.js");
+        favoritesScript = readAsset("favorites.js");
         tv = new TvBrowser(this, new CatalogueSuggestions(web.getSettings().getUserAgentString()), new TvBrowser.Actions() {
             @Override public void navigate(String url, String label) {
                 if (label.equals("back")) returnToCatalogue(); else navigateCatalogue(url, label);
@@ -137,6 +147,10 @@ public final class MainActivity extends Activity {
             @Override public void open(JSONObject movie) { openMovie(movie); }
             @Override public void play() { subtitleEpoch++; resolveMovie(); }
             @Override public void openSearch() { rememberSearchOrigin(); }
+            @Override public void trailer(String url) { openTrailer(url); }
+            @Override public void favorite(String id, Boolean selected, Consumer<Boolean> result) {
+                requestFavorite(id, selected, result);
+            }
             @Override public void search(String query) { searchCatalogue(query); }
             @Override public boolean loadMore(boolean retry) { return loadNextGridPage(retry); }
             @Override public void filter(String parameter, String value) { filterCatalogue(parameter, value); }
@@ -236,6 +250,7 @@ public final class MainActivity extends Activity {
         String url = movie.optString("url");
         if (!isMovie(Uri.parse(url))) return;
         suspendGridPaging();
+        if (currentMovie == null) favoritesChanged = false;
         subtitleEpoch++; currentMovie = movie; selectedSeason = 0; selectedEpisode = 0; accountVisible = false; pendingSearch = null; pageEpoch++;
         tv.showDetails(movie); web.loadUrl(url);
     }
@@ -249,11 +264,13 @@ public final class MainActivity extends Activity {
         }
         suspendGridPaging();
         subtitleEpoch++; currentMovie = null; accountVisible = false; pendingSearch = null; pageEpoch++;
-        preserveCatalogueViews = !returningFromAccount && tv.hasRenderedCatalogue(catalogueLabel);
+        boolean refreshFavorites = favoritesChanged && (catalogueLabel.equals("Home") || catalogueLabel.equals("Favorites"));
+        favoritesChanged = false;
+        preserveCatalogueViews = !returningFromAccount && !refreshFavorites && tv.hasRenderedCatalogue(catalogueLabel);
         if (returningFromAccount) { tv.resetSignature(); tv.focusCatalogueWhenReady(); }
         tv.hideDetails(); setNativeVisible(true);
         CatalogueCache previous = catalogueCache.get(catalogueUrl);
-        if (previous != null && (catalogueLabel.equals("Home") || catalogueLabel.equals("Watchlist"))) {
+        if (!refreshFavorites && previous != null && (catalogueLabel.equals("Home") || catalogueLabel.equals("Watchlist"))) {
             try { tv.render(previous.data, catalogueLabel); preserveCatalogueViews = true; }
             catch (Exception error) { preserveCatalogueViews = false; }
         }
@@ -334,7 +351,7 @@ public final class MainActivity extends Activity {
                         currentMovie.put("subtitleYear", data.optString("year", ""));
                         currentMovie.put("subtitleImdbId", data.optString("imdb", ""));
                         String key = playbackKey(Uri.parse(web.getUrl()));
-                        tv.detailsReady(data.optString("backdrop"), data.optString("poster"), data.optString("description"), data.optString("year"), data.optString("genre"), data.optString("cast"), getPreferences(0).getLong(key, 0), data.optJSONArray("episodes"));
+                        tv.detailsReady(data, getPreferences(0).getLong(key, 0));
                         return;
                     }
                 } catch (Exception ignored) { }
@@ -343,6 +360,7 @@ public final class MainActivity extends Activity {
             });
         }, attempt == 0 ? 400 : 750);
     }
+
     private void rememberSearchOrigin() {
         if (catalogueLabel.startsWith("Search: ")) return;
         JSONObject visible = null;
@@ -361,6 +379,81 @@ public final class MainActivity extends Activity {
         tv.focusCatalogueWhenReady();
         if (origin == null) navigateCatalogue("https://gramaton.io/", "Home");
         else navigateCatalogue(origin.url(), origin.label(), origin);
+    }
+
+    private void openTrailer(String url) {
+        Uri link = Uri.parse(url);
+        String videoId = link.getQueryParameter("v");
+        if (videoId == null || !videoId.matches("[A-Za-z0-9_-]{11}")) return;
+        Uri youtube = Uri.parse("https://www.youtube.com/watch").buildUpon().appendQueryParameter("v", videoId).build();
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, youtube).setPackage("com.google.android.youtube.tv"));
+        } catch (ActivityNotFoundException error) {
+            showEmbeddedTrailer(videoId);
+        }
+    }
+
+    private void showEmbeddedTrailer(String videoId) {
+        WebView embed = new WebView(this);
+        embed.setBackgroundColor(android.graphics.Color.BLACK);
+        embed.setFocusableInTouchMode(true);
+        embed.getSettings().setJavaScriptEnabled(true);
+        embed.getSettings().setDomStorageEnabled(true);
+        embed.getSettings().setAllowFileAccess(false);
+        embed.getSettings().setAllowContentAccess(false);
+        embed.getSettings().setMediaPlaybackRequiresUserGesture(false);
+        embed.setWebViewClient(new WebViewClient() {
+            @Override public boolean shouldOverrideUrlLoading(WebView view, android.webkit.WebResourceRequest request) {
+                Uri uri = request.getUrl();
+                return request.isForMainFrame() && !("https".equals(uri.getScheme()) && "www.youtube.com".equals(uri.getHost()));
+            }
+        });
+        Dialog dialog = new Dialog(this, android.R.style.Theme_Material_NoActionBar_Fullscreen);
+        dialog.setContentView(embed);
+        dialog.setOnDismissListener(ignored -> {
+            embed.stopLoading();
+            if (embed.getParent() instanceof ViewGroup parent) parent.removeView(embed);
+            embed.destroy();
+            trailerPlayer = null;
+            trailerDialog = null;
+        });
+        trailerPlayer = embed;
+        trailerDialog = dialog;
+        dialog.show();
+        embed.requestFocus();
+        embed.loadUrl("https://www.youtube.com/embed/" + videoId + "?autoplay=1",
+            Collections.singletonMap("Referer", "https://" + getPackageName()));
+    }
+
+    private void requestFavorite(String id, Boolean selected, Consumer<Boolean> result) {
+        JSONObject movie = currentMovie;
+        if (movie == null || !id.matches("[0-9]+")) { result.accept(null); return; }
+        String operation = selected == null ? "read" : selected ? "add" : "remove";
+        if (selected != null) {
+            favoritesChanged = true;
+            catalogueCache.keySet().removeIf(url -> {
+                String path = Uri.parse(url).getPath();
+                return "/".equals(path) || "/favorites".equals(path);
+            });
+        }
+        web.evaluateJavascript(favoritesScript.replace("__ID__", JSONObject.quote(id))
+            .replace("__OPERATION__", JSONObject.quote(operation)), ignored -> readFavoriteResult(movie, result, 0));
+    }
+
+    private void readFavoriteResult(JSONObject movie, Consumer<Boolean> result, int attempt) {
+        if (isDestroyed() || movie != currentMovie) return;
+        web.evaluateJavascript("JSON.stringify(window.gramatonFavoriteRequest)", encoded -> {
+            if (isDestroyed() || movie != currentMovie) return;
+            try {
+                JSONObject state = new JSONObject((String) new org.json.JSONTokener(encoded).nextValue());
+                if (state.optBoolean("done")) {
+                    result.accept(state.isNull("selected") ? null : state.optBoolean("selected"));
+                    return;
+                }
+            } catch (org.json.JSONException | ClassCastException ignored) { }
+            if (attempt < 55) handler.postDelayed(() -> readFavoriteResult(movie, result, attempt + 1), 200);
+            else result.accept(null);
+        });
     }
 
     private void searchCatalogue(String query) {
@@ -804,12 +897,14 @@ public final class MainActivity extends Activity {
         active = true;
         if (tv != null) tv.setForeground(tv.getVisibility() == View.VISIBLE);
         if (web != null) web.onResume();
+        if (trailerPlayer != null) trailerPlayer.onResume();
         appUpdates.refreshAvailability();
     }
     @Override protected void onPause() {
         active = false; subtitleEpoch++;
         if (tv != null) tv.setForeground(false);
         if (player != null) stopPlayback(null);
+        if (trailerPlayer != null) trailerPlayer.onPause();
         web.onPause();
         super.onPause();
     }
@@ -836,6 +931,7 @@ public final class MainActivity extends Activity {
         handler.removeCallbacksAndMessages(null); subtitleEpoch++; subtitleWorker.shutdownNow();
         if (playbackControls != null) playbackControls.dispose();
         if (player != null) { savePosition(); player.release(); }
+        if (trailerDialog != null) trailerDialog.dismiss();
         appUpdates.close();
         tv.dispose();
         web.destroy();

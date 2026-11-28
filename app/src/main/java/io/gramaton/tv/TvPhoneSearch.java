@@ -52,7 +52,7 @@ final class TvPhoneSearch extends LinearLayout {
         addView(code);
         TextView title = new TextView(activity);
         title.setText("Type from your phone");
-        title.setTextColor(0xfff5f7fb);
+        title.setTextColor(TvColors.WHITE);
         title.setTextSize(16);
         title.setGravity(Gravity.CENTER);
         LayoutParams titleSize = new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
@@ -60,7 +60,7 @@ final class TvPhoneSearch extends LinearLayout {
         addView(title, titleSize);
         TextView hint = new TextView(activity);
         hint.setText("Scan on the same Wi-Fi network");
-        hint.setTextColor(0xffaebbd0);
+        hint.setTextColor(TvColors.MUTED);
         hint.setTextSize(13);
         hint.setGravity(Gravity.CENTER);
         addView(hint, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));

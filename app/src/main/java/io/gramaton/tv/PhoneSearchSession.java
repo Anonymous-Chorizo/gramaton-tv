@@ -27,12 +27,13 @@ final class PhoneSearchSession implements AutoCloseable {
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>Gramaton TV search</title>
         <style>
-          body { color-scheme: dark; margin: 0; background: #090e17; color: #f5f7fb; font: 16px system-ui; }
+          body { color-scheme: dark; margin: 0; background: #000; color: #f5f5f5; font: 16px system-ui; }
           main { max-width: 28rem; margin: 12vh auto 0; padding: 1.5rem; }
           h1 { font-size: 1.75rem; } label { display: block; margin-bottom: .5rem; }
           input, button { box-sizing: border-box; width: 100%%; padding: .8rem 1rem; border-radius: .5rem; font: inherit; }
-          input { background: #1b2638; border: 1px solid #51647e; color: inherit; }
-          button { margin-top: .75rem; border: 0; background: #d5e7ff; color: #132842; font-weight: 650; }
+          input { background: #202020; border: 1px solid #666; color: inherit; }
+          button { margin-top: .75rem; border: 0; background: #f5f5f5; color: #000; font-weight: 650; }
+          :focus-visible { outline: 2px solid #f5f5f5; outline-offset: 2px; }
         </style>
         <main><h1>Gramaton TV search</h1>%s
           <form method="post"><label for="query">Movie or TV show</label>

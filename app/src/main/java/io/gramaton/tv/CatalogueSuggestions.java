@@ -91,10 +91,12 @@ final class CatalogueSuggestions {
                 Uri page = Uri.parse(link.startsWith("/") && !link.startsWith("//") ? ORIGIN + link : link);
                 if (!MainActivity.isMovie(page)) continue;
                 String year = match.isNull("year") ? "" : match.optString("year").trim();
+                String genre = match.isNull("genre") ? "" : match.optString("genre").trim();
                 String poster = match.isNull("poster") ? "" : match.optString("poster").trim();
                 JSONObject card = new JSONObject()
                     .put("url", page.toString()).put("title", title).put("image", poster)
-                    .put("year", year).put("meta", year).put("series", page.getPath().startsWith("/series/"));
+                    .put("year", year).put("genre", genre).put("meta", year)
+                    .put("series", page.getPath().startsWith("/series/"));
                 titles.putIfAbsent(page.getPath(), card);
             }
             return new ArrayList<>(titles.values());
