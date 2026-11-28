@@ -55,7 +55,7 @@ final class TvNavigationDrawer extends LinearLayout {
         addView(brand, new LayoutParams(-1, dp(46)));
     }
 
-    void addDestination(String label, int icon, Runnable action) {
+    Button addDestination(String label, int icon, Runnable action) {
         Button button = new Button(getContext());
         button.setContentDescription(label);
         button.setAllCaps(false);
@@ -80,8 +80,11 @@ final class TvNavigationDrawer extends LinearLayout {
             }
             if (key == KeyEvent.KEYCODE_DPAD_LEFT) return true;
             if (key != KeyEvent.KEYCODE_DPAD_UP && key != KeyEvent.KEYCODE_DPAD_DOWN) return false;
-            int next = destinations.indexOf(button) + (key == KeyEvent.KEYCODE_DPAD_UP ? -1 : 1);
-            if (next >= 0 && next < destinations.size()) destinations.get(next).requestFocus();
+            int step = key == KeyEvent.KEYCODE_DPAD_UP ? -1 : 1;
+            for (int next = destinations.indexOf(button) + step; next >= 0 && next < destinations.size(); next += step) {
+                Button candidate = destinations.get(next);
+                if (candidate.getVisibility() == VISIBLE && candidate.requestFocus()) break;
+            }
             return true;
         });
         LayoutParams size = new LayoutParams(-1, dp(40));
@@ -89,6 +92,7 @@ final class TvNavigationDrawer extends LinearLayout {
         destinations.add(button);
         addView(button, size);
         updateButton(button, false);
+        return button;
     }
 
     void separateActions() { addView(new View(getContext()), new LayoutParams(1, 0, 1)); }

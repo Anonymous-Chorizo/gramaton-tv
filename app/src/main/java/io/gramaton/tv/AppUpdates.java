@@ -9,6 +9,7 @@ import android.content.pm.PackageManager;
 import android.content.pm.Signature;
 import android.net.Uri;
 import android.os.Build;
+import android.os.SystemClock;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -24,53 +25,70 @@ import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 
 final class AppUpdates {
     private static final String REPO = "/Anonymous-Chorizo/gramaton-tv";
     private static final String RELEASES = "https://api.github.com/repos" + REPO + "/releases/latest";
     private static final long MAX_APK_BYTES = 128L * 1024 * 1024;
     private static final int MAX_RELEASE_BYTES = 1024 * 1024;
+    private static final long CHECK_INTERVAL_MS = 60_000;
     private final Activity activity;
+    private final Consumer<Boolean> availabilityChanged;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private AlertDialog dialog;
     private HttpURLConnection activeConnection;
+    private Release availableRelease;
+    private long lastCheck;
+    private boolean checking;
     private boolean closed;
 
-    AppUpdates(Activity activity) {
+    AppUpdates(Activity activity, Consumer<Boolean> availabilityChanged) {
         this.activity = activity;
+        this.availabilityChanged = availabilityChanged;
     }
 
-    void check() {
-        if (closed || dialog != null) return;
-        show("Checking for updates…", false);
+    void refreshAvailability() {
+        long now = SystemClock.elapsedRealtime();
+        if (closed || checking || dialog != null || (lastCheck != 0 && now - lastCheck < CHECK_INTERVAL_MS)) return;
+        checking = true;
+        lastCheck = now;
         worker.execute(() -> {
+            Release release;
             try {
                 PackageInfo installed = installedPackage();
-                Release release = latestRelease(activity.getString(R.string.update_asset_name), installed.versionName);
-                activity.runOnUiThread(() -> {
-                    if (!replaceDialog()) return;
-                    if (release == null) {
-                        show("You’re on the latest available version (" + installed.versionName + ").", true);
-                        return;
-                    }
-                    display(new AlertDialog.Builder(activity).setTitle("Gramaton " + release.tag + " is available")
-                        .setMessage("Download the update and confirm installation on your TV. Your Watchlist and resume history stay on this device.")
-                        .setPositiveButton("Download", (d, w) -> download(release))
-                        .setNegativeButton("Later", null));
-                });
-            } catch (NoReleaseException e) {
-                reportFailure(e.getMessage());
-            } catch (Exception e) {
-                reportFailure("Couldn’t check GitHub for updates. Try again later.");
+                release = latestRelease(activity.getString(R.string.update_asset_name), installed.versionName);
+            } catch (Exception ignored) {
+                release = null;
             }
+            Release result = release;
+            activity.runOnUiThread(() -> {
+                checking = false;
+                setAvailableRelease(result);
+            });
         });
+    }
+
+    private void setAvailableRelease(Release release) {
+        if (closed || activity.isFinishing() || activity.isDestroyed()) return;
+        availableRelease = release;
+        availabilityChanged.accept(release != null);
+    }
+
+    void showAvailableUpdate() {
+        Release release = availableRelease;
+        if (closed || dialog != null || release == null) return;
+        display(new AlertDialog.Builder(activity).setTitle("Gramaton " + release.tag + " is available")
+            .setMessage("Download the update and confirm installation on your TV. Your Watchlist and resume history stay on this device.")
+            .setPositiveButton("Download", (d, w) -> download(release))
+            .setNegativeButton("Later", null));
     }
 
     private Release latestRelease(String assetName, String installedVersion) throws Exception {
         HttpURLConnection connection = open(new URL(RELEASES), false);
         try {
             int status = connection.getResponseCode();
-            if (status == 404) throw new NoReleaseException("No update has been published on GitHub yet.");
+            if (status == 404) return null;
             requireSuccess(status);
             ByteArrayOutputStream json = new ByteArrayOutputStream();
             try (InputStream input = connection.getInputStream()) {
@@ -80,26 +98,29 @@ final class AppUpdates {
                     json.write(buffer, 0, count);
                 }
             }
-            JSONObject release = new JSONObject(json.toString(StandardCharsets.UTF_8.name()));
-            String tag = release.getString("tag_name");
-            if (compareVersions(tag, installedVersion) <= 0) return null;
-            JSONArray assets = release.getJSONArray("assets");
-            for (int index = 0; index < assets.length(); index++) {
-                JSONObject asset = assets.getJSONObject(index);
-                if (!assetName.equals(asset.optString("name"))) continue;
-                URL url = new URL(asset.getString("browser_download_url"));
-                String digest = asset.optString("digest");
-                long size = asset.optLong("size");
-                if (!trusted(url, "github.com") || !url.getPath().equals(REPO + "/releases/download/" + tag + "/" + assetName)
-                        || !digest.matches("sha256:[0-9a-f]{64}") || size <= 0 || size > MAX_APK_BYTES) {
-                    throw new IOException("Invalid APK release asset");
-                }
-                return new Release(tag, url, digest.substring(7), size);
-            }
-            throw new NoReleaseException("The latest release doesn’t include an APK for this TV.");
+            return parseRelease(new JSONObject(json.toString(StandardCharsets.UTF_8.name())), assetName, installedVersion);
         } finally {
             connection.disconnect();
         }
+    }
+
+    private static Release parseRelease(JSONObject release, String assetName, String installedVersion) throws Exception {
+        String tag = release.getString("tag_name");
+        if (compareVersions(tag, installedVersion) <= 0) return null;
+        JSONArray assets = release.getJSONArray("assets");
+        for (int index = 0; index < assets.length(); index++) {
+            JSONObject asset = assets.getJSONObject(index);
+            if (!assetName.equals(asset.optString("name"))) continue;
+            URL url = new URL(asset.getString("browser_download_url"));
+            String digest = asset.optString("digest");
+            long size = asset.optLong("size");
+            if (!trusted(url, "github.com") || !url.getPath().equals(REPO + "/releases/download/" + tag + "/" + assetName)
+                    || !digest.matches("sha256:[0-9a-f]{64}") || size <= 0 || size > MAX_APK_BYTES) {
+                throw new IOException("Invalid APK release asset");
+            }
+            return new Release(tag, url, digest.substring(7), size);
+        }
+        return null;
     }
 
     static int compareVersions(String left, String right) throws IOException {
@@ -310,10 +331,6 @@ final class AppUpdates {
         if (activeConnection != null) activeConnection.disconnect();
         worker.shutdownNow();
         if (dialog != null) dialog.dismiss();
-    }
-
-    private static final class NoReleaseException extends IOException {
-        NoReleaseException(String message) { super(message); }
     }
 
     private static final class Release {

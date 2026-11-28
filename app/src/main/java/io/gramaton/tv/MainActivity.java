@@ -66,7 +66,9 @@ public final class MainActivity extends Activity {
     private String applyingGridFilter, applyingGridFilterValue;
     private final java.util.LinkedHashMap<String, String> queuedGridFilters = new java.util.LinkedHashMap<>();
     private String pendingSearch, requestedCatalogueUrl = "https://gramaton.io/", lastCatalogueFingerprint = "";
+    private SearchOrigin searchOrigin;
     private int stableCatalogueReads;
+    private record SearchOrigin(String url, String label, String gridStartUrl, JSONObject catalogue) { }
     private static final class CatalogueCache {
         final JSONObject data; final long loadedAt = android.os.SystemClock.elapsedRealtime();
         CatalogueCache(JSONObject data) { this.data = data; }
@@ -81,7 +83,6 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
-        appUpdates = new AppUpdates(this);
         root = new FrameLayout(this);
         root.setBackgroundColor(android.graphics.Color.BLACK);
         getWindow().setBackgroundDrawableResource(android.R.color.black);
@@ -120,7 +121,8 @@ public final class MainActivity extends Activity {
             }
             @Override public void onReceivedError(WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceError error) {
                 if (request.isForMainFrame() && tv != null && !loadingGridPage && !awaitingGridRetry) {
-                    tv.status("Could not connect. Select Home to retry, or Account to sign in.");
+                    tv.status(catalogueLabel.startsWith("Search: ") ? "Could not connect. Try searching again."
+                        : "Could not connect. Select Home to retry, or Account to sign in.");
                 }
             }
         });
@@ -128,17 +130,18 @@ public final class MainActivity extends Activity {
         root.addView(browser, new FrameLayout.LayoutParams(-1, -1));
         catalogueScript = readAsset("catalogue.js");
         detailsScript = readAsset("details.js");
-        tv = new TvBrowser(this, new TvBrowser.Actions() {
+        tv = new TvBrowser(this, new CatalogueSuggestions(web.getSettings().getUserAgentString()), new TvBrowser.Actions() {
             @Override public void navigate(String url, String label) {
                 if (label.equals("back")) returnToCatalogue(); else navigateCatalogue(url, label);
             }
             @Override public void open(JSONObject movie) { openMovie(movie); }
             @Override public void play() { subtitleEpoch++; resolveMovie(); }
+            @Override public void openSearch() { rememberSearchOrigin(); }
             @Override public void search(String query) { searchCatalogue(query); }
             @Override public boolean loadMore(boolean retry) { return loadNextGridPage(retry); }
             @Override public void filter(String parameter, String value) { filterCatalogue(parameter, value); }
             @Override public void account() { showAccount(); }
-            @Override public void checkForUpdates() { appUpdates.check(); }
+            @Override public void showUpdate() { appUpdates.showAvailableUpdate(); }
             @Override public void exitToFireTv() {
                 android.content.Intent home = new android.content.Intent(android.content.Intent.ACTION_MAIN);
                 home.addCategory(android.content.Intent.CATEGORY_HOME);
@@ -161,6 +164,7 @@ public final class MainActivity extends Activity {
                 } catch (Exception ignored) { tv.status("Could not select this episode."); }
             }
         });
+        appUpdates = new AppUpdates(this, tv::setUpdateAvailable);
         root.addView(tv, new FrameLayout.LayoutParams(-1, -1));
         setContentView(root);
         tv.loading("Home");
@@ -177,6 +181,7 @@ public final class MainActivity extends Activity {
     }
     private void setNativeVisible(boolean visible) {
         tv.setVisibility(visible ? View.VISIBLE : View.GONE);
+        tv.setForeground(visible && active);
         browser.setDescendantFocusability(visible ? android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS : android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS);
         browser.setImportantForAccessibility(visible ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
         web.setFocusable(!visible); web.setFocusableInTouchMode(!visible);
@@ -189,6 +194,10 @@ public final class MainActivity extends Activity {
         web.loadUrl("https://gramaton.io/users");
     }
     private void navigateCatalogue(String url, String label) {
+        navigateCatalogue(url, label, null);
+    }
+
+    private void navigateCatalogue(String url, String label, SearchOrigin restore) {
         if (!isSite(Uri.parse(url))) return;
         suspendGridPaging();
         gridSourcePage = null;
@@ -196,8 +205,18 @@ public final class MainActivity extends Activity {
         if (TvBrowser.isGridListing(label)) tv.resetSignature();
         accountVisible = false; currentMovie = null; pendingSearch = null; pageEpoch++;
         preserveCatalogueViews = false; tv.rememberPage(); tv.hideDetails(); tv.closeSearch(); tv.setPageKey(catalogueStateKey(url));
+        searchOrigin = null;
         catalogueLabel = label; catalogueUrl = url; requestedCatalogueUrl = url;
         setNativeVisible(true);
+        if (restore != null && restore.catalogue() != null) {
+            try {
+                tv.render(restore.catalogue(), label);
+                gridStartUrl = restore.gridStartUrl();
+                preserveCatalogueViews = true;
+                web.loadUrl(url);
+                return;
+            } catch (Exception ignored) { /* Fall back to the normal catalogue load. */ }
+        }
         CatalogueCache cached = catalogueCache.get(url);
         if (cached != null) {
             try { tv.render(cached.data, label); } catch (Exception ignored) { cached = null; }
@@ -246,7 +265,12 @@ public final class MainActivity extends Activity {
         if (url.contains("/session/")) { suspendGridPaging(); catalogueCache.clear(); setNativeVisible(false); web.requestFocus(); return; }
         if (accountVisible) return;
         if (loadingGridPage || awaitingGridRetry) return;
-        if (pendingSearch != null) { String query = pendingSearch; pendingSearch = null; searchCatalogue(query); return; }
+        if (pendingSearch != null) {
+            String query = pendingSearch;
+            pendingSearch = null;
+            submitWebSearch(query, pageEpoch, 0);
+            return;
+        }
         if (isMovie(Uri.parse(url))) {
             if (currentMovie != null) pollDetails(++pageEpoch, 0);
             return;
@@ -319,17 +343,43 @@ public final class MainActivity extends Activity {
             });
         }, attempt == 0 ? 400 : 750);
     }
+    private void rememberSearchOrigin() {
+        if (catalogueLabel.startsWith("Search: ")) return;
+        JSONObject visible = null;
+        try { visible = tv.captureCatalogue(); }
+        catch (org.json.JSONException ignored) { /* The usual reload path can restore the listing. */ }
+        searchOrigin = new SearchOrigin(catalogueUrl, catalogueLabel, gridStartUrl, visible);
+    }
+
+    private void leaveSearch() {
+        if (!catalogueLabel.startsWith("Search: ")) {
+            searchOrigin = null;
+            tv.resumeCatalogueAfterSearch();
+            return;
+        }
+        SearchOrigin origin = searchOrigin;
+        tv.focusCatalogueWhenReady();
+        if (origin == null) navigateCatalogue("https://gramaton.io/", "Home");
+        else navigateCatalogue(origin.url(), origin.label(), origin);
+    }
+
     private void searchCatalogue(String query) {
+        if (searchOrigin == null) rememberSearchOrigin();
         preserveCatalogueViews = false;
         suspendGridPaging();
         gridSourcePage = null;
         gridStartUrl = null;
-        pageEpoch++; accountVisible = false; currentMovie = null; tv.rememberPage(); tv.hideDetails(); requestedCatalogueUrl = "";
-        catalogueLabel = "Search: " + query; tv.setPageKey("search:" + query); tv.resetSignature(); tv.loading(catalogueLabel);
-        if (web.getUrl() != null && !"/".equals(Uri.parse(web.getUrl()).getPath())) { pendingSearch = query; web.loadUrl("https://gramaton.io/"); return; }
-        if (!documentReady) { pendingSearch = query; return; }
+        pageEpoch++; accountVisible = false; currentMovie = null; pendingSearch = null;
+        tv.rememberPage(); tv.hideDetails(); requestedCatalogueUrl = "";
+        catalogueLabel = "Search: " + query;
+        tv.setPageKey("search:" + query);
+        tv.resetSignature();
+        tv.showSearchResults(query);
+        tv.loading(catalogueLabel);
         lastCatalogueFingerprint = "";
         stableCatalogueReads = 0;
+        if (web.getUrl() != null && !"/".equals(Uri.parse(web.getUrl()).getPath())) { pendingSearch = query; web.loadUrl("https://gramaton.io/"); return; }
+        if (!documentReady) { pendingSearch = query; return; }
         submitWebSearch(query, pageEpoch, 0);
     }
 
@@ -749,9 +799,16 @@ public final class MainActivity extends Activity {
         if (message != null) tv.status(message);
         tv.restoreFocus();
     }
-    @Override protected void onResume() { super.onResume(); active = true; if (web != null) web.onResume(); }
+    @Override protected void onResume() {
+        super.onResume();
+        active = true;
+        if (tv != null) tv.setForeground(tv.getVisibility() == View.VISIBLE);
+        if (web != null) web.onResume();
+        appUpdates.refreshAvailability();
+    }
     @Override protected void onPause() {
         active = false; subtitleEpoch++;
+        if (tv != null) tv.setForeground(false);
         if (player != null) stopPlayback(null);
         web.onPause();
         super.onPause();
@@ -763,8 +820,9 @@ public final class MainActivity extends Activity {
     }
     @Override public void onBackPressed() {
         if (player != null) { if (playbackControls != null && playbackControls.back()) return; stopPlayback(null); }
-        else if (tv.getVisibility() == View.VISIBLE && tv.closeSearch()) return;
         else if (tv.isDetailShowing() || accountVisible || tv.getVisibility() != View.VISIBLE) returnToCatalogue();
+        else if (tv.isSearchEditing()) leaveSearch();
+        else if (tv.isSearchOpen()) tv.showSearchEditor(false);
         else if (tv.dismissDrawer()) return;
         else if (!catalogueLabel.equals("Home")) { tv.focusCatalogueWhenReady(); navigateCatalogue("https://gramaton.io/", "Home"); }
         else super.onBackPressed();
