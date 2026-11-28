@@ -41,11 +41,12 @@
     let image = '';
     try { image = new URL(img.getAttribute('data-src') || img.getAttribute('src') || '', location.href).href; } catch (_) {}
     const genre = box.querySelector('.movie-genre'), year = box.querySelector('.mf-year'), plot = box.querySelector('.featured-plot');
+    const releaseYear = year ? year.textContent.trim() : '';
     const series = u.pathname.startsWith('/series/');
     let episode = '';
     if (series && u.searchParams.get('season') && u.searchParams.get('episode')) episode = 'S' + u.searchParams.get('season') + ' E' + u.searchParams.get('episode');
-    cards.push({url, title, image, section, series, landscape:isHome && section==='Featured', description:plot ? plot.textContent.trim() : '',
-      meta: [series ? 'TV series' : '', episode, year && year.textContent.trim(), genre && genre.textContent.trim()].filter(Boolean).join(' · ')});
+    cards.push({url, title, image, year:releaseYear, section, series, landscape:isHome && section==='Featured', description:plot ? plot.textContent.trim() : '',
+      meta: [series ? 'TV series' : '', episode, releaseYear, genre && genre.textContent.trim()].filter(Boolean).join(' · ')});
     seen.add(key);
   }
   const nextLink = !isHome && Array.from(document.querySelectorAll('.pagination a')).find(a =>

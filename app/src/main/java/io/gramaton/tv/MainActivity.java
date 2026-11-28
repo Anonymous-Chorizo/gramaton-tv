@@ -236,7 +236,7 @@ public final class MainActivity extends Activity {
         String url = movie.optString("url");
         if (!isMovie(Uri.parse(url))) return;
         suspendGridPaging();
-        subtitleEpoch++; currentMovie = movie; selectedSeason = 0; selectedEpisode = 0; accountVisible = false; pageEpoch++;
+        subtitleEpoch++; currentMovie = movie; selectedSeason = 0; selectedEpisode = 0; accountVisible = false; pendingSearch = null; pageEpoch++;
         tv.showDetails(movie); web.loadUrl(url);
     }
     private void returnToCatalogue() {
@@ -598,10 +598,10 @@ public final class MainActivity extends Activity {
         }
         return key.build().toString();
     }
-    private boolean isSite(Uri uri) {
+    private static boolean isSite(Uri uri) {
         return "https".equals(uri.getScheme()) && "gramaton.io".equals(uri.getHost());
     }
-    private boolean isMovie(Uri uri) {
+    static boolean isMovie(Uri uri) {
         return isSite(uri) && uri.getPath() != null && uri.getPath().matches("/(movies|series)/[0-9]+[^/]*");
     }
     private String playbackKey(Uri page) {
